@@ -1,0 +1,180 @@
+---
+title: "L vannamei WSSV challenge snRNAseq for transcriptomic analysis of - Parse Biosciences WT_mega v2 kit - PART 7 - DEG for WSSV immune response"
+author: "Alexandra Florea"
+date: "2024-06-12"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+PART 7 ---- Differential gene expression between different treatments and conditions by cluster - LO
+
+
+    # 1. PRE-RUN PREP 
+    
+    
+## 1.1 Prep the environment
+
+
+```{r Set working environment in R}
+
+# Set working directory (where the outputs will be sent)
+knitr::opts_knit$set(root.dir = 'your_file_path/Seurat_out')
+
+# Prevent scientific notation output 
+options(scipen=999)
+# set seed for reproducibility (UMAPs use seed of 42)
+set.seed(42)
+
+```
+
+
+## 1.2 Load all the necessary packages
+
+```{r Load packages}
+
+# load the libraries we need
+
+library(Seurat) # to run single cell analyses
+library(tidyverse) # helps to transform and better present data
+library(Seurat) # to run single cell analyses
+library(ggplot2) # to make plots
+library(dplyr) # to manipulate data frames
+library(cowplot) # to arrange plots in a grid
+library(data.table) # to use %like%
+library(glmGamPoi) # helps to speed up SCTransform step
+library(sctransform) # To run SCTransform
+
+```
+
+
+## 1.3  Load the data (from PART 6)
+
+
+Make sure the data is in R's specified current working directory."
+
+
+```{r load rds}
+
+LO_integrated_with_groups <- readRDS("LO_integrated_with_groups.rds")
+
+```
+
+
+## 1.4 Set Default Assay
+
+
+For performing differential expression after integration, we switch back to the SCT data
+# https://github.com/satijalab/seurat/issues/1534
+# https://satijalab.org/seurat/articles/integration_introduction.html
+
+```{r set default assay}
+
+#switch back to the SCT data 
+DefaultAssay(LO_integrated_with_groups) <- "SCT"
+
+```
+
+
+## 1.5 make combined control group
+
+
+```{r Combined control}
+
+# Check the unique values in sample_type to understand the current structure
+unique(LO_integrated_with_groups$sample_type)
+
+# Replace "FC" and "IC" with "FIC"
+LO_integrated_with_groups$sample_type[LO_integrated_with_groups$sample_type %in% c("FC", "IC")] <- "FIC"
+
+# Verify the changes
+unique(LO_integrated_with_groups$sample_type)
+
+```
+
+
+# 2. Find Markers
+
+
+```{r Differential Expression, warning=FALSE, results = 'hide'}
+
+# First prep for SCT based DE marker detection:
+# https://satijalab.org/seurat/reference/prepsctfindmarkers
+LO_integrated_with_groups <- PrepSCTFindMarkers(LO_integrated_with_groups, assay = "SCT")
+
+# Next I need to assign samples to groups (IC, IW, FC, FW).
+# Fortunately we have already done this: LO_integrated_with_groups$sample_type
+
+# Set treatment samples
+# These are the groups (FW, IW) I want to compare with each of the ids in the "control" (IC, FC ) in this case I just want to compare each of these with a single sample_typepoint TX)
+treatments <- c("FW", "IW")
+
+# Make new metadata column with cluster_sample
+# Ok so here for each cell, I'm making a new column again in the metadata called "cluster_by_group", this is going to have the cell type number first followed by a "_" and then followed by the sample type the cell was part of.
+# so the output here in the newly generated column should be in the format: CELLTYPENUMBER_SAMPLE_TYPE, e.g., "0_FW", "1_FC", etc.
+LO_integrated_with_groups$cluster_by_group <- paste(Idents(LO_integrated_with_groups), LO_integrated_with_groups$sample_type, sep = "_")
+
+# Make new metadata column to store Idents (currently cluster #)
+# I'm just saving my identities to a new column in the metadata (it's already saved somewhere else, but I want to keep an extra copy just in case)
+LO_integrated_with_groups$cell_cluster <- Idents(LO_integrated_with_groups)
+
+# Make the cluster_sample column your new Idents
+# ok so now we're telling Seurat that we want it to group our cells not by cluster (the default identity) but by the new column we just made "cluster_by_group", because we don't want to compare cell types, but rather the same cluster across different groups (FW, IF vs FIC)
+Idents(LO_integrated_with_groups) <- "cluster_by_group"
+
+
+# Ok so the following nested for loop is going to for each of our treatment groups ("FW", "IW") compare each cell type with that same cell type in the control ("FIC") and output the most differentially expressed genes for each comparison to a new file.
+
+#GENERAL STEPS: 
+
+# find markers for every cluster compared to all remaining cells
+# report only the positive ones
+# run a logistic regression model with sample as a latent variable (see: https://github.com/satijalab/seurat/issues/1057)
+# use "SCT" assay and the "data" slot: https://satijalab.org/seurat/articles/sctransform_v2_vignette.html
+
+for (j in 1:length(treatments)) { # for each of the treatment groups ("FW", "IW") (number specified by length(treatments))
+  for (i in 0:(length(unique(LO_integrated_with_groups$cell_cluster))-1)) { # and for each of the cell types (number specified by length(unique(LO_integrated_with_groups$cell_cluster)-1 since we're starting at 0))
+    
+    #specify the control sample that we'll be comparing
+    control <- paste0(i,"_FIC") 
+    
+    #specify the treatment sample that we'll be comparing
+    treatment <- paste0(i,"_",treatments[[j]]) # i gives you the cell cluster number, j gives you the sample id, and we need a "_" in the middle to match formatting in LO_integrated_with_groups$cluster_by_group
+    
+    # make the name of the file, specify which samples are being compared
+    file_name = paste0("DE-LO_", treatment, "_vs_", control, ".txt")
+    
+    # find differentially expressed markers between the two cell clusters
+    # Set the only.pos to FALSE because we'd like differentially expressed things which are either upregulated in the first cell type (control) OR in the second cell type (treatment), the latter scenario is considered a "negative" correlation with respect to expression in the first identity class
+    # We're going to use "tryCatch" because that should hopefully keep the loop running if there are errors as we expect since some cell types aren't found in all clusters and that could otherwise stop the loop from running
+    # Now the problem with using tryCatch is that it will keep going even if one ident isn't available, in which case the output will just be whatever was stored from the previous loop!!! NOT GOOD!!!
+    # So what we'll try to do is to make tryCatch store the error (error = identity), and this should be saved as the output in those comparisons where one ident isn't available, instead of the previous output!
+    #for more details see:https://unc-libraries-data.github.io/R-Open-Labs/week9_Loops_Errors/R_OpenLabs_Loops.html
+    #for more details on storing errors see: https://stackoverflow.com/questions/36966036/how-to-get-the-last-error
+    # also: http://adv-r.had.co.nz/Exceptions-Debugging.html
+    # we're going to use latent.vars = "orig.ident" to hopefully minimize isssues due to sample differences see: https://github.com/satijalab/seurat/issues/1057
+    output <- tryCatch(FindMarkers(LO_integrated_with_groups, ident.1 = treatment, ident.2 = control, assay = "SCT", slot = "data", only.pos = FALSE, min.pct = 0.1, return.thresh = 0.01, pseudocount.use = 0.001, logfc.threshold = 0.25),
+    error = function(e) geterrmessage())
+    
+    # save the markers to a file
+    write.table(output, file = file_name, sep="\t")
+  }
+}
+
+```
+
+
+################################################################################
+
+```{r Session Info}
+
+#Packages and versions for reference
+sessioninfo::session_info()
+
+```
+
+################################################################################
+
+CONTINUE IN PART 8

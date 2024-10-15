@@ -1,0 +1,1793 @@
+---
+title: "L vannamei WSSV challenge snRNAseq for transcriptomic analysis of - Parse Biosciences WT_mega v2 kit - PART 1 - QC"
+author: "Alexandra Florea"
+date: "2024-05-15"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+## R Markdown
+
+
+# WSSV infection in L. vannamei hepatopancreas (HP) and lymphoid organ (LO)
+# Single nuclei RNA sequencing
+# Parse kit, chemistry v2, WT_mega kit
+# 12 shrimp samples (S1_HP, S2_HP, S3_LO, S4_LO, S5a_HP, S5b_HP, S7_HP, S8_HP, S9_LO, S10_LO, S11_LO, S12_LO)
+# 8 sub-libraries combined into one using Parse split-pipe
+# The WSSV genome (2023) has been merged with the L. vannamei ref genome (2019) to look for WSSV integration into host cell genome
+
+# NOTE: Part of the script is taken from Sarah Salisbury.Original code from Satija labs developed for Seurat analysis
+
+NOTE1: ORIGINAL CODE FROM SARAH SALISBURY 2022:
+https://github.com/SarahSalisbury/snRNAseq_Pipeline/blob/main/Step2_Seurat_uptoUMAP.Rmd
+
+NOTE2: Seurat basics: https://satijalab.org/seurat/articles/essential_commands.html
+
+NOTE3: We will be working with lists and objects, a lot! Tutorial here: https://www.tutorialspoint.com/r/r_lists.htm
+
+
+################################################################################
+
+
+PART 1 ---- Quality control and filtering (feature no, features/cell, mtRNA/rRNA, cell cycle)
+
+
+    # 1. PRE-RUN PREP 
+
+
+```{r Set working environment in R}
+
+# Set working directory (where the outputs will be sent)
+knitr::opts_knit$set(root.dir = 'your_file_path/Seurat_out')
+# Prevent scientific notation output 
+options(scipen=999)
+# set seed for reproducibility (UMAPs use seed of 42)
+set.seed(42)
+
+```
+
+
+## 1.2. Install older version of Seurat (v5+ breaks the pipeline used in this analysis):
+
+
+Install the "remotes" package first if you don't have it to get the installation packages from specified source (need for older Seurat package & others)
+
+Note that this package requires you to have RTools installed. Rtools44 (for R 4.4.0) is only needed for installation of R packages from source (what we need it for) or building R from source.
+
+Actually first time I ran this code with Seurat 4.4.0 it gave me some trouble with some of the code, but there are fixes along the way. 
+
+
+```{r Install the "remotes" package}
+
+# below is the code needed (remove # and run)
+#install.packages('remotes')
+
+# Load the library
+library(remotes) # Allows package installation from specified source
+
+```
+
+
+# Install Seurat v4.4.0
+
+See: https://satijalab.org/seurat/articles/install_v5.html#install-seurat-v4
+
+```{r Install Seurat v4.4.0}
+
+# below is the code needed (remove # and run)
+
+# Might want to first make sure we do not have other unwanted versions of seurat and seuratobject installed
+
+#remove.packages("SeuratObject")
+#remove.packages("Seurat")
+
+# Second we need to install 'cran/spatstat.core', otherwise Seurat installation will have a non-zero exit because it depends on this package already existing
+#remotes::install_github("cran/spatstat.core")
+
+# Now we can install Seurat 4.4.0 (min version for Parse data is 4.3.0 (to read count_matrix.mtx), min version for the analysis I did is 4.4.0)
+# IMPORTANT! 
+# Turns out that even if Seurat is an older version, and even if you tell it not to update anything upon installation, the SeuratObject package will still be the latest version (in this case v5.2) 
+# You need to manually install Seurat Object too (version compatible with Seurat 4.4.0)
+# Install Seurat Object BEFORE seurat (Seurat will not override the Seurat Object that we install first)
+
+#remotes::install_version("SeuratObject", "4.1.4", repos = c("https://satijalab.r-universe.dev", getOption("repos")))
+#remotes::install_version("Seurat", "4.4.0", repos = c("https://satijalab.r-universe.dev", getOption("repos")))
+
+# check you installed the correct version of Seurat
+
+#library(Seurat)
+#sessioninfo::session_info()
+
+```
+
+
+## 1.3.  Load all the neccesary packages for this analysis 
+
+
+```{r Load packages, results = "hide"}
+
+# load other libraries (install if required -> this should be detected automatically by R)
+# If packages are not detected automatically you can run the code below (just change the package names):
+# For single packages use: install.packages ('library name')
+# For multiple packages at once you need to apply the c function: install.packages(c('library 1', 'library 2'))
+
+###########
+
+# Remove # and install packages first time you run the code. The below ones were not detected by R automatically
+
+### dplyr, ggplot2, data.table, openxlsx, RColorBrewer, gtools
+
+#install.packages(c('dplyr', 'ggplot2', 'data.table', 'openxlsx', 'RColorBrewer', 'gtools'))
+
+### glmGamPoi
+
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#install.packages("BiocManager")
+
+#BiocManager::install("glmGamPoi")
+
+### DoubletFinder - older version that supports Seurat V3/V4
+
+#remotes::install_github('https://github.com/ekernf01/DoubletFinder', force = T)
+
+library(Seurat) # to run single cell analyses
+library(tidyverse) # helps to transform and better present data
+library(tidyseurat) # like tidyverse for Seurat (needed for Parse data)
+library(Matrix) # provides classes for matrices
+library(reticulate) # interoperability between Python and R
+library(clustree) #a llows you to produce clustering trees
+library(gridExtra) # work with "grid" graphics
+library(ggplot2) # to make plots
+library(dplyr) # to manipulate data frames
+library(cowplot) # to arrange plots in a grid
+library(data.table) # to use %like%
+library(glmGamPoi) # helps to speed up SCTransform step
+library(DoubletFinder) # to detect doublets in our dataset
+library(openxlsx) # to turn the seurat object into an excel file
+library(RColorBrewer) # for fancy color pallets :) 
+library(gtools)  # For mixedsort function (tabulates samples in numerical order, rather than alphabetical. Useful when your samples are S1, S2, ..etc). This works automatically rather than us having to modify any chunks of code. For stuff like: "table(sample.raw$sample)"
+library(ggjoy) # to create nice ridge plots (aka joy plots) in ggplot2
+library(sessioninfo) # to keep a note of R and packages used (incl the version) for future reference
+
+```
+
+
+## 1.4 Create our Seurat object for the analysis
+
+
+This is the file that will contain the data from Parse Pipeline (combined, annotated, demultiplexed sub-libraries)
+
+```{r create Seurat object}
+
+cell_meta <- "your_file_path/Eddie_out/combined_shrimp_WSSV/all-sample/DGE_filtered/"
+
+# Note: Inside the DGE_filtered folder there is a file named "count_matrix.mtx". Make sure to rename matrix file to DGE.mtx
+mat <- ReadParseBio(data.dir = cell_meta)
+
+# Check to see if empty gene names are present, add name if so.
+table(rownames(mat) == "")
+
+# If you get "FALSE" means no empty gene names so proceed. If you get any positives see below an example:
+
+# table(rownames(mat) == "COX1")
+# if you get any TRUEs, change the empty ones to Unknown
+# rownames(mat)[rownames(mat) == ""] <- "unknown"
+
+
+# Read in cell meta data
+cell_meta <- read.csv(paste0(cell_meta, "cell_metadata.csv"), row.names = 1)
+
+# Create Seurat object -> name=vannamei_nuclei
+# Specify that each feature must occur in at least 3 cells, and each cell must have at least 200 features for all samples
+sample.raw <- CreateSeuratObject(mat, min.cells = 3, min.features = 200, names.field = 0, meta.data = cell_meta, project = "nuclei_project")
+
+```
+    
+    
+    # 2. Add sample names inside the Seurat Object
+
+I need to do this because something has gone wrong in the Parse split-pipe code. Basically at the end inside the final file that has all the sub-libraries combined I was supposed to have my sample names as specified (S1,S2..etc) in the code. But for some reason every row is "all sample". Some of the code below requires us to specify the different samples (aka data in the"sample" column which is the same as "orig.ident" for 10x data). We need to have correct values in this metadata column. 
+
+So I need to "manually" change the name of the sample in the "sample" column based on the bc1_well (aka the first well the sample was in which corresponds with the sample names in my lab book)
+
+
+My samples are (same name as specified in the split-pipe code):
+
+S1_HP=control feed HP             -wells A1-A3
+S2_HP=control injection HP        -wells A4-A6
+S3_LO=control feed LO             -wells A7-A9
+S4_LO=control injection LO        -wells A10-A12
+S5a_HP=WSSV feed HP 1             -wells B1-A3
+S5b_HP=WSSV feed HP 2             -wells B4-B6
+S7_HP=WSSV injection HP 1         -wells B7-B9
+S8_HP=WSSV injection HP 2         -wells B10-B12
+S9_LO=WSSV feed LO 1              -wells C1-C2
+S10_LO=WSSV feed LO 2             -wells C3-C4
+S11_LO=WSSV injection LO 1        -wells C5-C6
+S12_LO=WSSV injection LO 2        -wells C7-C8
+
+
+## 2.1 Add sample names for all 12 samples 
+
+Need to run this one sample at a time.
+
+```{r Sample S1_HP}
+
+# Get the names of the columns in the metadata
+metadata_columns <- colnames(sample.raw@meta.data)
+
+# Iterate through each column
+for (column_name in metadata_columns) {
+  # Access the data for the current column
+  column_data <- sample.raw@meta.data[[column_name]]
+  
+  # Check if the current column is "bc1_well"
+  if (column_name == "bc1_well") {
+    
+    sample.raw@meta.data$sample <- ifelse(column_data %in% c("A1", "A2", "A3"), "S1_HP", sample.raw@meta.data$sample)
+  
+  }
+}
+
+```
+
+```{r Sample S2_HP}
+
+# Get the names of the columns in the metadata
+metadata_columns <- colnames(sample.raw@meta.data)
+
+# Iterate through each column
+for (column_name in metadata_columns) {
+  # Access the data for the current column
+  column_data <- sample.raw@meta.data[[column_name]]
+  
+  # Check if the current column is "bc1_well"
+  if (column_name == "bc1_well") {
+    
+    sample.raw@meta.data$sample <- ifelse(column_data %in% c("A4", "A5", "A6"), "S2_HP", sample.raw@meta.data$sample)
+  
+  }
+}
+
+```
+
+```{r Sample S3_LO}
+
+# Get the names of the columns in the metadata
+metadata_columns <- colnames(sample.raw@meta.data)
+
+# Iterate through each column
+for (column_name in metadata_columns) {
+  # Access the data for the current column
+  column_data <- sample.raw@meta.data[[column_name]]
+  
+  # Check if the current column is "bc1_well"
+  if (column_name == "bc1_well") {
+    
+    sample.raw@meta.data$sample <- ifelse(column_data %in% c("A7", "A8", "A9"), "S3_LO", sample.raw@meta.data$sample)
+  
+  }
+}
+
+```
+
+```{r Sample S4_LO}
+
+# Get the names of the columns in the metadata
+metadata_columns <- colnames(sample.raw@meta.data)
+
+# Iterate through each column
+for (column_name in metadata_columns) {
+  # Access the data for the current column
+  column_data <- sample.raw@meta.data[[column_name]]
+  
+  # Check if the current column is "bc1_well"
+  if (column_name == "bc1_well") {
+    
+    sample.raw@meta.data$sample <- ifelse(column_data %in% c("A10", "A11", "A12"), "S4_LO", sample.raw@meta.data$sample)
+  
+  }
+}
+
+```
+
+```{r Sample S5a_HP}
+
+# Get the names of the columns in the metadata
+metadata_columns <- colnames(sample.raw@meta.data)
+
+# Iterate through each column
+for (column_name in metadata_columns) {
+  # Access the data for the current column
+  column_data <- sample.raw@meta.data[[column_name]]
+  
+  # Check if the current column is "bc1_well"
+  if (column_name == "bc1_well") {
+    
+    sample.raw@meta.data$sample <- ifelse(column_data %in% c("B1", "B2", "B3"), "S5a_HP", sample.raw@meta.data$sample)
+  
+  }
+}
+
+```
+
+```{r Sample S5b_HP}
+
+# Get the names of the columns in the metadata
+metadata_columns <- colnames(sample.raw@meta.data)
+
+# Iterate through each column
+for (column_name in metadata_columns) {
+  # Access the data for the current column
+  column_data <- sample.raw@meta.data[[column_name]]
+  
+  # Check if the current column is "bc1_well"
+  if (column_name == "bc1_well") {
+    
+    sample.raw@meta.data$sample <- ifelse(column_data %in% c("B4", "B5", "B6"), "S5b_HP", sample.raw@meta.data$sample)
+  
+  }
+}
+
+```
+
+```{r Sample S7_HP}
+
+# Get the names of the columns in the metadata
+metadata_columns <- colnames(sample.raw@meta.data)
+
+# Iterate through each column
+for (column_name in metadata_columns) {
+  # Access the data for the current column
+  column_data <- sample.raw@meta.data[[column_name]]
+  
+  # Check if the current column is "bc1_well"
+  if (column_name == "bc1_well") {
+    
+    sample.raw@meta.data$sample <- ifelse(column_data %in% c("B7", "B8", "B9"), "S7_HP", sample.raw@meta.data$sample)
+  
+  }
+}
+
+```
+
+```{r Sample S8_HP}
+
+# Get the names of the columns in the metadata
+metadata_columns <- colnames(sample.raw@meta.data)
+
+# Iterate through each column
+for (column_name in metadata_columns) {
+  # Access the data for the current column
+  column_data <- sample.raw@meta.data[[column_name]]
+  
+  # Check if the current column is "bc1_well"
+  if (column_name == "bc1_well") {
+    
+    sample.raw@meta.data$sample <- ifelse(column_data %in% c("B10", "B11", "B12"), "S8_HP", sample.raw@meta.data$sample)
+  
+  }
+}
+
+```
+
+```{r Sample S9_LO}
+
+# Get the names of the columns in the metadata
+metadata_columns <- colnames(sample.raw@meta.data)
+
+# Iterate through each column
+for (column_name in metadata_columns) {
+  # Access the data for the current column
+  column_data <- sample.raw@meta.data[[column_name]]
+  
+  # Check if the current column is "bc1_well"
+  if (column_name == "bc1_well") {
+    
+    sample.raw@meta.data$sample <- ifelse(column_data %in% c("C1", "C2"), "S9_LO", sample.raw@meta.data$sample)
+  
+  }
+}
+
+```
+
+```{r Sample S10_LO}
+
+# Get the names of the columns in the metadata
+metadata_columns <- colnames(sample.raw@meta.data)
+
+# Iterate through each column
+for (column_name in metadata_columns) {
+  # Access the data for the current column
+  column_data <- sample.raw@meta.data[[column_name]]
+  
+  # Check if the current column is "bc1_well"
+  if (column_name == "bc1_well") {
+    
+    sample.raw@meta.data$sample <- ifelse(column_data %in% c("C3", "C4"), "S10_LO", sample.raw@meta.data$sample)
+  
+  }
+}
+
+```
+
+```{r Sample S11_LO}
+
+# Get the names of the columns in the metadata
+metadata_columns <- colnames(sample.raw@meta.data)
+
+# Iterate through each column
+for (column_name in metadata_columns) {
+  # Access the data for the current column
+  column_data <- sample.raw@meta.data[[column_name]]
+  
+  # Check if the current column is "bc1_well"
+  if (column_name == "bc1_well") {
+    
+    sample.raw@meta.data$sample <- ifelse(column_data %in% c("C5", "C6"), "S11_LO", sample.raw@meta.data$sample)
+  
+  }
+}
+
+```
+
+```{r Sample S12_LO}
+
+# Get the names of the columns in the metadata
+metadata_columns <- colnames(sample.raw@meta.data)
+
+# Iterate through each column
+for (column_name in metadata_columns) {
+  # Access the data for the current column
+  column_data <- sample.raw@meta.data[[column_name]]
+  
+  # Check if the current column is "bc1_well"
+  if (column_name == "bc1_well") {
+    
+    sample.raw@meta.data$sample <- ifelse(column_data %in% c("C7", "C8"), "S12_LO", sample.raw@meta.data$sample)
+  
+  }
+}
+
+```
+
+
+## 2.2 Export the data to check the output is correct
+
+
+First, make an excel file with the desired name at the desired destination first! -> data gets put in there
+
+```{r export seurat object to excel}
+
+# Specify the file path where you want to save the Excel file
+excel_file <- "your_file_path/Seurat_out/object_with_samples.xlsx"
+
+# Export metadata to Excel
+write.xlsx(x = sample.raw@meta.data, file = excel_file)
+
+```
+
+Now go to the excel and have a look through the "sample" column. :)
+
+```{r Additional sanity check}
+
+# Check if the entry "all-sample" is present in the column "sample"
+is_all_sample_present <- any(sample.raw@meta.data$sample %in% "all-sample")
+
+# Print the result
+if (is_all_sample_present) {
+  cat("The value 'all-sample' is present in the 'sample' column.\n")
+} else {
+  cat("The value 'all-sample' is not present in the 'sample' column.\n")
+}
+
+```
+
+
+################################################################################
+
+
+   # 3. MITOCHONDRIAL GENOME (INCL MITOCHONDRIA rRNA & tRNA)
+   
+
+## 3.1 Generate a list of samples to be used in this analysis
+
+
+```{r}
+
+# Make list of IDs (of samples) to be used in the downstream analysis
+ids <- c("S1_HP", "S2_HP", "S3_LO", "S4_LO", "S5a_HP", "S5b_HP", "S7_HP", "S8_HP", "S9_LO", "S10_LO", "S11_LO", "S12_LO")
+
+# Check how many remaining cells you have.
+# In total (can use "orig.ident" or "species" column in metadata because it is identical for all rows)
+table(sample.raw$species)
+
+# by sample 
+table(sample.raw$sample)
+
+```
+
+So we can see in this initial step that we have 23.6k nuclei in total after the initial filtering step (min.cells = 3, min.features = 200). Also, HP does not have many cells comparing to LO.
+
+
+## 3.2 Calculate the percentage of mitochondria DNA in our sample
+
+
+This is a non-standard genome -> need to manually curate mitochondrial genes and put them in the list
+
+All mtDNA genes for whiteleg shrimp (as found in the .gff file for the mtDNA) incl genes, tRNAs and rRNAs. We will make R recognize "mtgenes" as all of the below genes in L. vannamei without us having to write the whole list of genes every time. 
+
+```{r list of L. vannamei mt genes}
+
+#All mtDNA genes for whiteleg shrimp (as found in the .gff file for the mtDNA). We will make R recognize "mtgenes" as all of the below genes in L vannamei without us having to write the whole list of genes every time. 
+mtgenes <- c("ND2","COX1","COX2","ATP8","ATP6","COX3","ND3","ND5","ND4","ND4L","ND6","CYTB","ND1","KEG56-t012","KEG56-t02","KEG56-t03","KEG56-t04","KEG56-t05","KEG56-t06","KEG56-t07","KEG56-t08","KEG56-t09","KEG56-t10","KEG56-t11","KEG56-t12","KEG56-t13","KEG56-t14","KEG56-t15","KEG56-t16","KEG56-t17","KEG56-t18","KEG56-t19","KEG56-t20","KEG56-t21","KEG56-t22","KEG56-r02","KEG56-r01")
+
+```
+
+
+Now only some of these are actually in the feature list (some will have gotten filtered out because they didn't appear in more than 3 cells for example). We get an error if we ask Seurat to look for features which aren't present using "PercentFeatureSet" below, so we need to know which of the mtgenes above are actually in our feature list.
+
+
+```{r mtDNA info}
+
+# Check which of our mtgenes are in the feature list and save this as mtgenesinfeaturelist
+mtgenesinfeaturelist <- mtgenes[mtgenes %in% sample.raw@assays$RNA@counts@Dimnames[[1]]]
+
+# So which mtDNA genes are in our feature list?
+mtgenesinfeaturelist
+
+# Calculate the percentage of reads within each nuclei which are taken up by these mtDNA genes -> expect none -> nuclei seq not cells!
+# The [[ operator can add columns to object metadata -> great place to add QC stats for later
+sample.raw[["percent.mt"]] <- PercentageFeatureSet(sample.raw, features = mtgenesinfeaturelist)
+
+```
+
+Note that R outputted only "KEG56-r02" "KEG56-r01" as present in the features list for me.
+
+
+## 3.3 Plot some basic pre-QC stats
+
+
+```{r Quick stats-Code from Pooran Dewari}
+
+# Mean mitochondrial DNA in sample
+mito <- mean(sample.raw$percent.mt)
+
+# Median number of features in sample (genes)
+med_feature <- median(sample.raw$nFeature_RNA)
+
+# Median RNA in sample
+med_RNA <- median(sample.raw$nCount_RNA)
+
+```
+
+
+```{r Plot pre-QC stats}
+
+# Ensure samples are ordered numerically (otherwise you get alphabetical samples, aka S1, S10, S11..etc)
+sample.raw$sample <- factor(sample.raw$sample, levels = gtools::mixedsort(unique(sample.raw$sample)))
+
+# Define a color palette with enough colors for all samples 
+num_samples <- length(unique(sample.raw$sample))
+# Generate a larger color palette (otherwise you get multiple white samples at the end)
+color_palette <- colorRampPalette(brewer.pal(12, "Set3"))(num_samples)
+
+# Common theme for all plots
+common_theme <- theme(
+  plot.title = element_text(size = 10),
+  axis.text = element_text(size = 9),
+  axis.title = element_text(size = 10),
+  legend.text = element_text(size = 8),
+  legend.title = element_text(size = 8)
+)
+
+# Plot 1: percentage of mitochondria in our sample
+p1 <- VlnPlot(sample.raw, pt.size = 0, features = "percent.mt", split.by = "sample", split.plot = TRUE) +
+  scale_y_continuous(limits = c(0, 10), breaks = c(0, 5, 10)) +
+  scale_fill_manual(values = color_palette) +
+  ggtitle(paste("percent mitochondria, mean= ", round(mito, 2), "%")) +
+  common_theme
+
+# Plot 2: number of feature RNA (i.e. genes detected per cell)
+p2 <- VlnPlot(sample.raw, pt.size = 0, features = "nFeature_RNA", split.by = "sample", split.plot = TRUE) +
+  scale_y_continuous(limits = c(0, 2000), breaks = c(0, 500, 1000, 1500, 2000)) +
+  scale_fill_manual(values = color_palette) +
+  ggtitle(paste("genes detected per cell \n (nFeature_RNA, median= ", round(med_feature), ")")) +
+  common_theme
+
+# Plot 3: number of count RNA (i.e. total RNA molecules detected per cell)
+p3 <- VlnPlot(sample.raw, pt.size = 0, features = "nCount_RNA", split.by = "sample", split.plot = TRUE) +
+  scale_y_continuous(limits = c(0, 2000), breaks = c(0, 500, 1000, 1500, 2000)) +
+  scale_fill_manual(values = color_palette) +
+  ggtitle(paste("RNA molecules detected per cell \n (nCount_RNA, median= ", round(med_RNA), ")")) +
+  common_theme
+
+# Plot 4: correlation between total RNA molecules and genes
+p4 <- FeatureScatter(sample.raw, feature1 = "nCount_RNA", feature2 = "nFeature_RNA") +
+  labs(x = "nUMI", y = "nGenes") +
+  ggtitle("correlation between total RNA molecules & genes detected") +
+  common_theme +
+  NoLegend()
+
+# Save plots individually as PNG files
+ggsave("plot1_percent_mitochondria.png", plot = p1, width = 6, height = 4, dpi = 300)
+ggsave("plot2_genes_detected.png", plot = p2, width = 6, height = 4, dpi = 300)
+ggsave("plot3_RNA_molecules.png", plot = p3, width = 6, height = 4, dpi = 300)
+ggsave("plot4_correlation.png", plot = p4, width = 6, height = 4, dpi = 300, bg = "white")
+
+# Print plots to the R console
+print(p1)
+print(p2)
+print(p3)
+print(p4)
+
+```
+
+
+## 3.4 Ridgeplot visualization of mtDNA percentage
+
+
+```{r Ridgeplot percent mtRNA}
+
+# Set ncol to number of plots you want in each row
+# Add a vertical line at 1.09% mtDNA percentage (mean identified in the graphs above)
+# Ridgeplot with X axis from 0% to 5% since we have very little mtDNA
+RidgePlot(sample.raw, features = c("percent.mt"), ncol = 1) +
+  scale_x_continuous(limits = c(0, 5)) +
+  geom_vline(xintercept = 1.09)
+
+```
+From the graphs so far looks like nothing is above 5% mtDNA% which is the usual cutoff point in single nuclei analysis. 
+
+
+## 3.5 Distribution of mtDNA percentage by cell rank
+
+
+Now let’s visualize the mtDNA percentage distribution by cells ranked by mtDNA percentage.This will be done for every sample individually
+
+Code modified from:
+-https://ucdavis-bioinformatics-training.github.io/2022-March-Single-Cell-RNA-Seq-Analysis/data_analysis/scRNA_Workshop-PART1_fixed
+-https://stackoverflow.com/questions/26034177/save-multiple-ggplots-using-a-for-loop
+
+```{r mtDNA percentage distribution}
+
+# We're going to save several plots in a list so generate an empty list
+plot_list_mt = list()
+
+#Now do a for loop that is as long as the number of samples in your Seurat object (ids)
+for (i in 1:length(ids)) {
+  datatoplot <- sample.raw[[]] %>% filter (sample == ids[i]) # our data to plot will be a subset of the Seurat object, including only the metadata for those cells which have the same sample id (orig.ident) as our input individual sample
+  # Plot
+  pl1 <- data.frame(index=seq.int(1,nrow(datatoplot)), # make a dataframe with an index value starting from 1 and going to the number of rows in our filtered metadata dataframe (equals the number of cells for our sample)
+                    nFeature_RNA = sort(datatoplot$percent.mt,decreasing=F)) %>% # sort the number of genes per cell from the metadata in increasing order (because large number of mtDNA = bad)
+    ggplot() + #let's make a ggplot figure
+    scale_color_manual(values=c("coral1"), labels=c("percent.mt"), name=NULL) + # specify our colours, then specify color labels, set name = NULL so no legend title
+    ggtitle(paste(ids[i], "Raw Parse nuclei",sep=" "), subtitle = "pre-filtered for cells with >= 3 gene, genes in >= 200 cells") + xlab("Barcodes") + ylab("Percentage mtDNA genes (%)") + # set title of figure, x-axis, y-axis
+    geom_line(aes(x=index, y=nFeature_RNA, color = "percent.mt"), size=1.25) # plot the Feature counts
+  plot_list_mt[[i]] = pl1 #add the figure to the list
+}
+
+## Warning: Using `size` aesthetic for lines was deprecated in ggplot2 3.4.0.
+## ℹ Please use `linewidth` instead.
+# Relabel each plot in your list with the sample name:
+names(plot_list_mt) <- ids
+
+# Let's have a look at our plots
+print(plot_list_mt)
+
+```
+
+A 5% cutoff point will do. 5% is the usual norm for mammalian species data.
+(See tutorial here: https://satijalab.org/seurat/articles/pbmc3k_tutorial.html).
+
+
+## 3.6 Filter Cells by mtDNA percentage
+
+
+Apply the decided filters from above to the data. This will keep just the “clean” nuclear data
+
+```{r Apply filter on raw data}
+
+# Reset upper bound of mtDNA to 5% as decided above
+mt_upper <- 5
+
+# Keep only those cells with mtDNA percentage below this upper threshold
+sample.raw <- subset(sample.raw, subset = percent.mt < mt_upper)
+
+# Check how many remaining cells you have for each sample.
+table(sample.raw$sample)
+
+```
+For us, these numbers should be identical to what we had before because we had no cells with mtDNA > 5%. Check with the table above. It seems all our cells are still there.
+
+
+## 3.6 Filter out mtDNA features
+
+
+So we know that there shouldn’t be any mtDNA genes in our dataset (because we’re sequencing nuclei not cells). Therefore we’re going to filter out all of the mtDNA genes from our feature list. Code modified from: https://github.com/satijalab/seurat/issues/2610
+
+```{r Filter out mtDNA from raw data}
+
+# Get RNA counts array
+counts <- GetAssayData(sample.raw, assay = "RNA")
+
+# Determine how many features you have before filtering.
+nrow(counts)
+
+# Get RNA counts array excluding (-) those rownames which are mtDNA genes
+counts <- counts[-(which(rownames(counts) %in% mtgenes)),]
+
+# Determine how many features you have after filtering.
+nrow(counts)
+
+# SANITY CHECK: Is the number of features before filtering equal to that after filtering equal plus the number of mtDNA features?
+length(mtgenesinfeaturelist) + nrow(counts)
+
+# Subset the Seurat object to include only those features which are in the rownames of the counts array
+sample.raw <- subset(sample.raw, features = rownames(counts))
+
+```
+
+
+## 3.8 Filter unique genes in cells
+
+
+### 3.8.1 Number of genes (features) and molecules (UMI) (RNA) per cell
+
+
+Low-quality cells will often have very few genes and RNA molecules -> impose a lower limit on the number of genes per cell
+
+Cell doublets or multiplets may exhibit an aberrant high gene count and high count of RNA molecules (because there’s RNA from multiple nuclei) -> impose an upper limit on the number of genes and RNA molecules per cell
+
+To make some decisions on this we want to visualize the data in a few ways:
+
+
+```{r Violin Plot visualization of features and UMIs}
+
+# Visualize QC metrics as a violin plot
+# Set pt.size to 0 to see the violins!
+VlnPlot(object = sample.raw, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2, pt.size = 0)
+
+```
+
+```{r}
+
+# Can be easier to see if you do them one by one:
+VlnPlot(object = sample.raw, features = c("nFeature_RNA"))
+
+```
+
+```{r}
+
+VlnPlot(object = sample.raw, features = c("nCount_RNA"))
+
+```
+
+```{r Scatterplot visualization of features and UMIs}
+
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+scatterplot <- FeatureScatter(sample.raw, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+scatterplot
+
+```
+
+
+### 3.8.2 Ridgeplot visualization of features and UMIs
+
+
+It will help us compare feature counts with RNA molecule counts. Normally we should see that the number of genes (features) correlates with the number of RNA molecules (count), but sometimes there are some cells with really high RNA molecule and gene counts.
+
+```{r Ridgeplot visualization of features and UMIs}
+
+# Set "ncol" to number of plots you want in each row (here we want 2)
+# Add a vertical line at 5% mtDNA percentage with "geom_vline" (that is what we filtered for)
+
+RidgePlot(sample.raw, features=c("nFeature_RNA","nCount_RNA"), ncol = 2) + geom_vline(xintercept = c(5)) 
+
+```
+
+
+### 3.8.3  Plot feature and UMI counts per cell by cell rank
+
+
+Visualize the feature and UMI counts per cell distribution by cells ranked by feature and UMI count.
+
+To help us in making our decision for hard upper and lower bounds of UMI and feature counts for each sample we're going to plot this data three times:
+  1. Using a logarithmic scale for the y-axis (counts of features/UMIs), this is how this data is plotted by CellRanger (and it gives you a characteristic "knee" plot)
+  2. Using an untransformed y-axis
+  3. Only plotting the first 1000 ranked cells (to help identify upper bounds of feature/UMI counts)
+
+Code modified from:
+https://ucdavis-bioinformatics-training.github.io/2022-March-Single-Cell-RNA-Seq-Analysis/data_analysis/scRNA_Workshop-PART1_fixed
+
+
+```{r Plot feature and UMI counts per cell by cell rank}
+
+## 1. Feature/UMI distribution plot with logarithmic y-axis
+
+
+# We're going to save several plots in a list so generate an empty list
+plot_list_umiftlog = list()
+
+# Now do a for loop that is as long as the number of samples in our Seurat object (ids)
+for (i in 1:length(ids)) {
+  # Setting up the plot space
+  xbreaks = c(1,1e1,1e2,1e3,1e4,1e5,1e6) # for our plot we will have breaks along the x axis at the noted values
+  xlabels = c("1","10","100","1000","10k","100K","1M") # we will label these breaks with the noted appropriate values
+  ybreaks = c(1,2,5,10,20,50,100,200,500,1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000) # we will have breaks along the y axis at the noted values
+  ylabels = c("1","2","5","10","2","5","100","2","5","1000","2","5","10k","2","5","100K","2","5","1M") # we will label these breaks with the noted appropriate values
+  # Data
+  datatoplot <- sample.raw[[]] %>% filter (sample == ids[i]) # our data to plot will be a subset of the Seurat object, including only the metadata for those cells which have the same sample id (sample for Parse or orig.ident for 10x) as our input individual sample
+  # Plot
+  pl1 <- data.frame(index=seq.int(1,nrow(datatoplot)), # make a dataframe with an index value starting from 1 and going to the number of rows in our filtered metadata dataframe (equals the number of cells for our sample)
+                    nCount_RNA = sort(datatoplot$nCount_RNA,decreasing=T), # sort the number of RNA molecules per cell from the metadata in decreasing order
+                    nFeature_RNA = sort(datatoplot$nFeature_RNA,decreasing=T)) %>% # sort the number of genes per cell from the metadata in decreasing order
+    ggplot() + #make a ggplot figure
+    scale_color_manual(values=c("coral1","black"), labels=c("Features","UMI"), name=NULL) + # specify our colours, then specify color labels, set name = NULL so no legend title
+    ggtitle(paste(ids[i], "Raw Parse nuclei",sep=" "), subtitle = "pre-filtered for nuclei with >= 200 genes, genes in >= 3 cells") + xlab("Barcodes") + ylab("counts (UMI or Features)") + # set title of figure, x-axis, y-axis
+    scale_x_continuous(trans = 'log2', breaks=xbreaks, labels = xlabels) + # set x axis
+    scale_y_continuous(trans = 'log2', breaks=ybreaks, labels = ylabels) + # set y axis
+    geom_line(aes(x=index, y=nCount_RNA, color = "UMI"), size=1.75) + # plot the RNA molecule counts
+    geom_line(aes(x=index, y=nFeature_RNA, color = "Features"), size=1.25) # plot the Feature counts
+  plot_list_umiftlog[[i]] = pl1 #add the figure to the list
+}
+
+# Relabel each plot in your list with the sample name:
+names(plot_list_umiftlog) <- ids
+
+# Let's have a look at our plots
+print(plot_list_umiftlog)
+
+
+## 2. Feature/UMI distribution plot with untransformed y-axis
+
+
+# We're going to save several plots in a list so generate an empty list
+plot_list_umiftuntransformed = list()
+
+# Now do a for loop that is as long as the number of samples in your Seurat object (ids)
+for (i in 1:length(ids)) {
+  # Setting up the plot space
+  ybreaks = c(1,2,5,10,20,50,100,200,500,1000,2000,5000,10000,20000,50000,100000,200000,500000,1000000) # we will have breaks along the y axis at the noted values
+  ylabels = c("1","2","5","10","2","5","100","2","5","1000","2","5","10k","2","5","100K","2","5","1M") # we will label these breaks with the noted appropriate values
+  
+  # Data
+  datatoplot <- sample.raw[[]] %>% filter (sample == ids[i]) # our data to plot will be a subset of the Seurat object, including only the metadata for those cells which have the same sample id (sample for Parse or orig.ident for 10x) as our input individual sample
+  
+  # Plot
+  pl1 <- data.frame(index=seq.int(1,nrow(datatoplot)), # make a dataframe with an index value starting from 1 and going to the number of rows in our filtered metadata dataframe (equals the number of cells for our sample)
+                    nCount_RNA = sort(datatoplot$nCount_RNA,decreasing=T), # sort the number of RNA molecules per cell from the metadata in decreasing order
+                    nFeature_RNA = sort(datatoplot$nFeature_RNA,decreasing=T)) %>% # sort the number of genes per cell from the metadata in decreasing order
+    ggplot() + # Make a ggplot figure
+    scale_color_manual(values=c("coral1","black"), labels=c("Features","UMI"), name=NULL) + # specify our colours, then specify color labels, set name = NULL so no legend title
+     ggtitle(paste(ids[i], "Raw Parse nuclei",sep=" "), subtitle = "pre-filtered for nuclei with >= 200 genes, genes in >= 3 cells") + xlab("Barcodes") + ylab("counts (UMI or Features)") + # set title of figure, x-axis, y-axis
+    scale_y_continuous(trans = 'log2', breaks=ybreaks, labels = ylabels) + # set y axis
+    geom_line(aes(x=index, y=nCount_RNA, color = "UMI"), size=1.75) + # plot the RNA molecule counts
+    geom_line(aes(x=index, y=nFeature_RNA, color = "Features"), size=1.25) # plot the Feature counts
+  plot_list_umiftuntransformed[[i]] = pl1 #add the figure to the list
+}
+
+# Relabel each plot in your list with the sample name:
+names(plot_list_umiftuntransformed) <- ids
+
+# Let's have a look at our plots
+print(plot_list_umiftuntransformed)
+
+
+## 3. Feature/UMI distribution plot with untransformed y-axis and only first 1000 cells
+
+
+# We're going to save several plots in a list so generate an empty list
+plot_list_umiftuntransformed_first1000 = list()
+
+# Now do a for loop that is as long as the number of samples in your Seurat object (ids)
+for (i in 1:length(plot_list_umiftuntransformed)) {
+ plot <- plot_list_umiftuntransformed[[i]] + xlim(0,1000) # plot each of the previously generated plots with an x-limit of 1000
+ plot_list_umiftuntransformed_first1000[[i]] = plot # save your plot to the list
+}
+
+# Relabel each plot in your list with the sample name:
+names(plot_list_umiftuntransformed_first1000) <- ids
+
+# Let's have a look at our plots
+print(plot_list_umiftuntransformed_first1000)
+
+```
+
+NOTE: For the first graph (knee plot) we want to get rid of the first wiggly top bit and the bottom bit where the graph bends towards the Y axis. We want to keep a nice, clean as straight as possible, line in the middle (that is where the true, quality data is)
+
+
+### 3.8.4 Replot feature and UMI counts per cell by cell rank with upper and lower bounds
+
+
+Have a close look at the plots -> decide on upper and lower bound for UMI and feature counts.
+
+For my full dataset put together (plotted in a separate analysis): features=200-5000 and UMI=225-20k
+
+NOTE 1: Look at how many cells we get. A good library should have between 7-10,000 nuclei.
+
+NOTE 2: >2000 nuclei after filtering gives good results -> note, this is also dependent on the number of cell types we have.
+
+```{r Replot feature and UMI counts per cell by cell rank with limits}
+
+# Set limits for each of our samples (THESE MUST BE CHANGED MANUALLY TO SUIT EACH PARTICULAR SAMPLES! We need to add the bounds with a comma for each sample. For example if we have 3 samples: c(500,600,650))
+UMI_upper <- c(2000, 1600, 7500, 20000, 2000, 2000, 2000, 2000, 6000, 7500, 7500, 7500) # set upper UMI limit
+UMI_lower <- c(300, 230, 350, 250, 300, 300, 300, 300, 300, 300, 300, 300) # set lower UMI limit
+Feature_upper <- c(1000, 1000, 3500, 5000, 1000, 1000, 1200, 1000, 2500, 3000, 3000, 3000) # set upper feature limit
+Feature_lower <- c(200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200, 200) # set upper feature limit
+
+
+## 1. Feature/UMI distribution plot with logarithmic y-axis
+
+
+# We're going to save several plots in a list so generate an empty list
+plot_list_umiftlog_limits = list()
+
+# Now do a for loop that is as long as the number of samples in your Seurat object (ids)
+for (i in 1:length(plot_list_umiftlog)) {
+  plot <- plot_list_umiftlog[[i]] +
+    geom_hline(yintercept = c(UMI_lower[i], UMI_upper[i]), color = "black") +
+    geom_hline(yintercept = c(Feature_lower[i], Feature_upper[i]), color = "coral1")
+  plot_list_umiftlog_limits[[i]] = plot # save your plot to the list
+}
+# Re-label each plot in your list with the sample name:
+names(plot_list_umiftlog_limits) <- ids
+
+# Let's have a look at our plots
+print(plot_list_umiftlog_limits)
+
+# Now let's save each of the plots as a .tiff file
+for (i in 1:length(plot_list_umiftlog_limits)) { # for loop from one to number of samples
+  file_name = paste("UMIfeature_distribution_plot_log_", ids[i], ".tiff", sep="") # save a separate .tiff file for each sample, name it
+  tiff(file_name)  # start making the .tiff file
+  print(plot_list_umiftlog_limits[[i]]) # print the plot for the particular sample
+  dev.off() # stop making the .tiff file
+}
+
+
+## 2. Feature/UMI distribution plot with untransformed y-axis
+
+
+# We're going to save several plots in a list so generate an empty list
+plot_list_umiftuntransformed_limits = list()
+
+# Now do a for loop that is as long as the number of samples in your Seurat object (ids)
+for (i in 1:length(plot_list_umiftuntransformed)) {
+  plot <- plot_list_umiftuntransformed[[i]] +
+    geom_hline(yintercept = c(UMI_lower[i], UMI_upper[i]), color = "black") +
+    geom_hline(yintercept = c(Feature_lower[i], Feature_upper[i]), color = "coral1")
+  plot_list_umiftuntransformed_limits[[i]] = plot # save your plot to the list
+}
+
+# Relabel each plot in your list with the sample name:
+names(plot_list_umiftuntransformed_limits) <- ids
+
+# Let's have a look at our plots
+print(plot_list_umiftuntransformed_limits)
+
+# Now let's save each of the plots as a .tiff file
+for (i in 1:length(plot_list_umiftuntransformed_limits)) { # for loop from one to number of samples
+  file_name = paste("UMIfeature_distribution_plot_untransformed_", ids[i], ".tiff", sep="") # save a separate .tiff file for each sample, name it
+  tiff(file_name)  # start making the .tiff file
+  print(plot_list_umiftuntransformed_limits[[i]]) # print the plot for the particular sample
+  dev.off() # stop making the .tiff file
+}
+
+
+## 3. Feature/UMI distribution plot with untransformed y-axis and only first 1000 cells
+
+
+# We're going to save several plots in a list so generate an empty list
+plot_list_umiftuntransformed_first1000_limits = list()
+
+# Now do a for loop that is as long as the number of samples in your Seurat object (ids)
+for (i in 1:length(plot_list_umiftuntransformed_first1000)) {
+  plot <- plot_list_umiftuntransformed_first1000[[i]] +
+    geom_hline(yintercept = c(UMI_lower[i], UMI_upper[i]), color = "black") +
+    geom_hline(yintercept = c(Feature_lower[i], Feature_upper[i]), color = "coral1")
+  plot_list_umiftuntransformed_first1000_limits[[i]] = plot # save your plot to the list
+}
+
+# Relabel each plot in your list with the sample name:
+names(plot_list_umiftuntransformed_first1000_limits) <- ids
+
+# Let's have a look at our plots
+print(plot_list_umiftuntransformed_first1000_limits)
+
+# Now let's save each of the plots as a .tiff file
+for (i in 1:length(plot_list_umiftuntransformed_first1000_limits)) { # for loop from one to number of samples
+  file_name = paste("UMIfeature_distribution_plot_untransformed_first1000_", ids[i], ".tiff", sep="") # save a separate .tiff file for each sample, name it
+  tiff(file_name)  # start making the .tiff file
+  print(plot_list_umiftuntransformed_first1000_limits[[i]]) # print the plot for the particular sample
+  dev.off() # stop making the .tiff file
+}
+
+
+## 4. Now let's look at all these plots together
+
+
+FeatureUMIplots <- cowplot::plot_grid( # arrange plots using cowplot
+  plot_list_umiftlog_limits[[1]], plot_list_umiftuntransformed_limits[[1]], plot_list_umiftuntransformed_first1000_limits[[1]], #we have only one sample so [[1]] is for sample one with the upper and lower bounds 1. We would need to repeat this line with [[2]] if we had 2 samples, [[3]] for 3 samples..etc
+  # order plots
+  ncol = 3, # number of columns to arrange plots in
+  nrow = 2 # number of rows to arrange plots in
+)
+
+# Save these plots
+pdf(file = "DistributionsofFeaturesandUMIs.pdf", # name of file
+    useDingbats=FALSE, # don't let R save your points as Dingbats characters
+    width = 20, # specify width
+    height = 10) # specify height
+FeatureUMIplots # plot
+dev.off() # save
+
+
+## 5. Replot our scatterplot with our limits added as a horizontal line for the Feature limits and vertical lines for the UMI limits
+
+
+# This would generally need to be done separately for each sample since each sample has different limits added, but I only have one sample
+
+# We're going to save several plots in a list so generate an empty list
+plot_list_scatter = list()
+# Now do a for loop that is as long as the number of samples in your Seurat object (ids)
+for (i in 1:length(ids)) {
+  # Data
+  datatoplot <- subset(sample.raw, subset = sample == ids[i]) # our data to plot will be a subset of the Seurat object, including only the metadata for those cells which have the same sample id (sample for Parse or orig.ident for 10x) as our input individual sample
+  # Plot
+  pl1 <- FeatureScatter(datatoplot, feature1 = "nCount_RNA", feature2 = "nFeature_RNA") +
+    ggtitle(paste("UMI and Features for", ids[i], sep=" ")) + # set title
+    geom_hline(yintercept = c(Feature_lower[i], Feature_upper[i])) + geom_vline(xintercept = c(UMI_lower[i], UMI_upper[i]))
+  plot_list_scatter[[i]] = pl1 #add the figure to the list
+}
+
+# Relabel each plot in your list with the sample name:
+names(plot_list_scatter) <- ids
+
+# Let's have a look at our plots
+print(plot_list_scatter)
+
+# Now let's save each of the plots as a .tiff file
+for (i in 1:length(plot_list_scatter)) { # for loop from one to number of samples
+  file_name = paste("UMIfeature_scatterplot_", ids[i], ".tiff", sep="") # save a separate .tiff file for each sample, name it
+  tiff(file_name)  # start making the .tiff file
+  print(plot_list_scatter[[i]]) # print the plot for the particular sample
+  dev.off() # stop making the .tiff file
+}
+
+```
+
+
+# 3.8.5 Filter Cells by UMI/Feature Counts
+
+
+Happy with the filters -> apply them to our data
+
+```{r filter cells by UMI/feature counts}
+
+# Set your limits, THESE MUST BE ALTERED TO SUIT YOUR SAMPLES!!
+
+#here are the values again for our reference
+
+# Sample	Feat_low  Feat_up	UMI_low	UMI_up
+#1	    200	      1000	  300	    2000
+#2	    200	      1000	  230	    1600
+#3	    200	      3500	  350	    7500
+#4	    200	      5000	  250	    20000
+#5a	    200	      1000	  300	    2000
+#5b	    200	      1000	  300	    2000
+#7	    200	      1200	  300	    2000
+#8	    200	      1000	  300	    2000
+#9	    200	      2500	  300	    6000
+#10	    200	      3000	  300	    7500
+#11	    200	      3000	  300	    7500
+#12	    200	      3000	  300	    7500
+
+# Filter each sample individually
+
+# S1
+UMI_upper <- 2000
+UMI_lower <- 300
+Feature_upper <- 1000
+Feature_lower <- 200
+
+S1.HP <- subset(sample.raw, subset = sample == "S1_HP" & nFeature_RNA > Feature_lower & nFeature_RNA < Feature_upper & nCount_RNA > UMI_lower & nCount_RNA < UMI_upper)
+
+# S2
+UMI_upper <- 1600
+UMI_lower <- 230
+Feature_upper <- 1000
+Feature_lower <- 200
+
+S2.HP <- subset(sample.raw, subset = sample == "S2_HP" & nFeature_RNA > Feature_lower & nFeature_RNA < Feature_upper & nCount_RNA > UMI_lower & nCount_RNA < UMI_upper)
+
+# S3
+UMI_upper <- 7500
+UMI_lower <- 350
+Feature_upper <- 3500
+Feature_lower <- 200
+
+S3.LO <- subset(sample.raw, subset = sample == "S3_LO" & nFeature_RNA > Feature_lower & nFeature_RNA < Feature_upper & nCount_RNA > UMI_lower & nCount_RNA < UMI_upper)
+
+# S4
+UMI_upper <- 20000
+UMI_lower <- 250
+Feature_upper <- 5000
+Feature_lower <- 200
+
+S4.LO <- subset(sample.raw, subset = sample == "S4_LO" & nFeature_RNA > Feature_lower & nFeature_RNA < Feature_upper & nCount_RNA > UMI_lower & nCount_RNA < UMI_upper)
+
+# S5a
+UMI_upper <- 2000
+UMI_lower <- 300
+Feature_upper <- 1000
+Feature_lower <- 200
+
+S5a.HP <- subset(sample.raw, subset = sample == "S5a_HP" & nFeature_RNA > Feature_lower & nFeature_RNA < Feature_upper & nCount_RNA > UMI_lower & nCount_RNA < UMI_upper)
+
+# S5b
+UMI_upper <- 2000
+UMI_lower <- 300
+Feature_upper <- 1000
+Feature_lower <- 200
+
+S5b.HP <- subset(sample.raw, subset = sample == "S5b_HP" & nFeature_RNA > Feature_lower & nFeature_RNA < Feature_upper & nCount_RNA > UMI_lower & nCount_RNA < UMI_upper)
+
+# S7
+UMI_upper <- 2000
+UMI_lower <- 300
+Feature_upper <- 1200
+Feature_lower <- 200
+
+S7.HP <- subset(sample.raw, subset = sample == "S7_HP" & nFeature_RNA > Feature_lower & nFeature_RNA < Feature_upper & nCount_RNA > UMI_lower & nCount_RNA < UMI_upper)
+
+# S8
+UMI_upper <- 2000
+UMI_lower <- 300
+Feature_upper <- 1000
+Feature_lower <- 200
+
+S8.HP <- subset(sample.raw, subset = sample == "S8_HP" & nFeature_RNA > Feature_lower & nFeature_RNA < Feature_upper & nCount_RNA > UMI_lower & nCount_RNA < UMI_upper)
+
+# S9
+UMI_upper <- 6000
+UMI_lower <- 300
+Feature_upper <- 2500
+Feature_lower <- 200
+
+S9.LO <- subset(sample.raw, subset = sample == "S9_LO" & nFeature_RNA > Feature_lower & nFeature_RNA < Feature_upper & nCount_RNA > UMI_lower & nCount_RNA < UMI_upper)
+
+# S10
+UMI_upper <- 7500
+UMI_lower <- 300
+Feature_upper <- 3000
+Feature_lower <- 200
+
+S10.LO <- subset(sample.raw, subset = sample == "S10_LO" & nFeature_RNA > Feature_lower & nFeature_RNA < Feature_upper & nCount_RNA > UMI_lower & nCount_RNA < UMI_upper)
+
+# S11
+UMI_upper <- 7500
+UMI_lower <- 300
+Feature_upper <- 3000
+Feature_lower <- 200
+
+S11.LO <- subset(sample.raw, subset = sample == "S11_LO" & nFeature_RNA > Feature_lower & nFeature_RNA < Feature_upper & nCount_RNA > UMI_lower & nCount_RNA < UMI_upper)
+
+# S12
+UMI_upper <- 7500
+UMI_lower <- 300
+Feature_upper <- 3000
+Feature_lower <- 200
+
+S12.LO <- subset(sample.raw, subset = sample == "S12_LO" & nFeature_RNA > Feature_lower & nFeature_RNA < Feature_upper & nCount_RNA > UMI_lower & nCount_RNA < UMI_upper)
+
+
+# Merge samples-> we would need to merge samples as before here if we had more than 1 sample. But only applies for >2x 10x samples. Not for Parse
+
+# Merge samples
+sample.raw <- merge(S1.HP, y = c(S2.HP, S3.LO, S4.LO, S5a.HP, S5b.HP, S7.HP, S8.HP, S9.LO, S10.LO, S11.LO, S12.LO), add.cell.ids = c("S1_HP", "S2_HP", "S3_LO", "S4_LO", "S5a_HP", "S5b_HP", "S7_HP", "S8_HP", "S9_LO", "S10_LO", "S11_LO", "S12_LO"), project = "nuclei_project")
+
+# Check how many remaining cells you have (7-10k is ideal)
+#total
+table(sample.raw$species)
+#by sample
+table(sample.raw$sample)
+
+# Write the tables with the sorting applied
+cellspersampletable <-table(sample.raw$sample)
+write.table(cellspersampletable, file = "cellspersampleaftermtandhardfilters")
+
+```
+
+Look at how many cells you have left.
+
+If it is >2000 is good. Ideal is >5000 and perfect is 7-10k. We had 12 samples so that is ~2k cells/sample, but note that we had worse data for HC than LO. After the Parse split-pipe we barely had any HP cells in there. -> Might need to discard the HP data altogether and just keep the LO. 
+
+NOTE FROM THE FUTURE: Downstream of the analysis I will realize that the LO had 21k cells or so and the HP had 2-3k. So the LO data is actually perfect and I ended up discarding the HP and continuing with just the LO for the main data.
+
+
+## 3.9 Cell cycle normalisation
+
+
+Cell cycle can influence gene expression (diff genes get expressed differently in cells based on cell cycle and could lead to false positive links to differential cell expression if not taken into account).
+
+STEPS: 1) we want to identify the cell-cycle specific genes for shrimp (based on human equivalents).
+       2) We tell Seurat to identify which cell cycle stage the cells are at based on the cell cycle regulator gene expression.
+       3) Adjust expression profile of cells based on their cell cycle stage -> should reduce differences in gene expression due to cell cycle stage.
+
+More info about this here: https://satijalab.org/seurat/articles/cell_cycle_vignette.html#regress-out-cell-cycle-scores-during-data-scaling-1
+
+
+### 3.9.1 Get list of cell cycle marker genes for Humans (for S and G2/M phase)
+
+
+Latest list update = 2019 (https://rdrr.io/cran/Seurat/man/cc.genes.updated.2019.html) -> Will use this one
+More info on PCA of cc genes here: https://hbctraining.github.io/scRNA-seq/lessons/cell_cycle_scoring.html
+List of genes also found here: https://raw.githubusercontent.com/hbc/tinyatlas/master/cell_cycle/Homo_sapiens.csv
+
+NOTE: Make sure that Seurat's library is loaded (so load again just in case). Otherwise the command will give a "Error: object 'cc.genes' not found".
+
+```{r cell cycle markers for humans}
+
+library(Seurat)
+
+cc.genes.updated.2019 <- cc.genes
+
+# Load S phase genes
+cc.genes.updated.2019$s.genes <- UpdateSymbolList(symbols = cc.genes.updated.2019$s.genes)
+
+# Load G2M phase genes
+cc.genes.updated.2019$g2m.genes <- UpdateSymbolList(symbols = cc.genes.updated.2019$g2m.genes)
+
+# Display outputs
+cc.genes.updated.2019$s.genes
+cc.genes.updated.2019$g2m.genes
+
+```
+
+These genes are for human. We want to search within the genome we used on the NCBI website for L. vannamei to be consistent
+
+
+### 3.9.2 Make L vannamei cell cycle genes table
+
+Make an excel table with the cell cycle genes for L. vannamei following the format below:
+
+(ENSEMBL-genome)
+Human_Symbol	Ensembl_Symbol	Ensembl_ID	        Cycle
+MCM5        	mcm5	          ENSSSAG00000040979	S.gene
+
+(NCBI-genome)
+Human_Symbol	Gene_name	      Gene_ID	            Cycle
+ECT2	        LOC113810205   	gene-LOC113810205	  G2M.gene
+
+
+STEPS:
+1) Copy gene from human table and google full name (best to search on GeneCards.org). eg: TYMS=Thymidylate Synthetase
+2) Go to NCBI and search: Panaeus vannamei Thymidylate Synthetase (also try for abbreviation of not found)
+3) Get ONLY the LOCxxxxxxxxx ID for the GENE ITSELF ("TYMS-like" gets a pass if there is nothing else). DO NOT include TYMS-interacting partner, TYMS-associating factor..etc (these are completely different genes that produce proteins that interact with our gene of interest)
+4) Check the gene name (aka LOCxxxxxxxxx) is present in our Panaeus vannamei genome (do a search in the genome .gff file)
+5) If all good, add gene to the table in excel
+
+NOTE1: For stuff like WDR76 gene, we want THAT EXACT PARALOGUE (aka no 76).  Do not include other paralogues like WDR33, WDR24..etc. You want to be fairly stringent with these genes because some have many paralogues which might not be involved in cell cycling.
+
+NOTE2: Remember to check alternative gene names ("also known as" in NCBI)
+
+NOTE3: We might also have multiple paralogues for some genes -> make sure to check for those!
+
+NOTE4: We want to be stringent with the search and not add genes that "just look like they could be markers". Quality over quantity, but we still need a resonable number of marker genes for this step. So if we do not have enough it is better to just skip this QC step.
+
+After we make the table (.csv) we should check it. Note, my table name=CellCycleGenes_LV.csv and it is in the output directory of Seurat. We need to tell Seurat to return the gene names as written in either the Ensembl_Symbol (ENSEMBL) or Gene_ID (NCBI)
+
+```{r cell cycle markers for study organism}
+
+# Read in cell cycle genes
+cellcyclegenes <- read.csv("your_file_path/Seurat_out/CellCycleGenes_LV.csv") 
+head(cellcyclegenes)
+
+# Pull out S phase genes
+S.genes <- cellcyclegenes %>% dplyr::filter(Cycle == "S.gene") %>% dplyr::select(Gene_name) %>% pull(Gene_name) # "pull" converts the identified column to a vector
+S.genes
+
+# Pull out the G2M phase genes
+G2M.genes <- cellcyclegenes %>% dplyr::filter(Cycle == "G2M.gene") %>% dplyr::select(Gene_name) %>% pull(Gene_name)
+G2M.genes
+
+```
+
+
+### 3.9.3 Normalize Data using ccgenes
+
+
+So before we can generate the cell cycle scores we need to normalize the data (we're going to normalize again based on the cell cycle scores later on using SCT and prior to doubletfinder).
+
+Guide on SCTransform and NormalizeData: https://github.com/satijalab/seurat/issues/1679
+
+NOTE: CellCycleScore() requires a large enough dataset, if you have too small a dataset then you get an error like this "Error in `cut_number()`:! Insufficient data values to produce 24 bins". Removing features expressed in no cells (because the cells they appeared in have been filtered out above) does not fix the problem (https://github.com/satijalab/seurat/issues/1227). Performing the CellCycleScoring() before removing any cells after initially importing the data does not work either (not enough memory for the task) (https://github.com/satijalab/seurat/issues/5814).
+
+Solution: Use NormalizeData() rather than SCTransform prior to calculating CellCycleScores() (https://github.com/satijalab/seurat/issues/3692).
+
+```{r normalize data}
+
+# If we have multiple samples we need to first split the dataset into a list of seurat objects (one for each sample).
+sample.list <- SplitObject(sample.raw, split.by = "sample")
+
+# Normalize and identify variable features -> NormalizeData()
+sample.list <- lapply(X = sample.list, FUN = function(x) {
+  x <- NormalizeData(x)})
+
+# By default, we employ a global-scaling normalization method “LogNormalize” that normalizes the feature expression measurements for each cell by the total expression, multiplies this by a scale factor (10,000 by default), and log-transforms the result. Normalized values are stored in x[["RNA"]]@data, COUNTS ARE OK THOUGH (x[["RNA"]]@counts). We aren't going to use these lognormalized data for anything other than generating cell cycle scores, so just be careful later to not reference the x[["RNA"]]@data slot! Always refer to the SCT slot that we'll make later on!
+
+```
+
+
+### 3.9.4 Cell Cycle Scores
+
+
+```{r cell cycle scoring}
+
+# Now we're going to assign each nuclei to a cell cycle stage based on their expression of the S.genes and the G2M.genes
+sample.list <- lapply(X = sample.list, FUN = function(x) {
+  x <- CellCycleScoring(object = x,
+                        g2m.features = G2M.genes,
+                        s.features = S.genes,
+                        set.ident = TRUE,
+                        assay = 'RNA') # ok so here, I think it will read the "data" slot by default, based on this code: https://github.com/satijalab/seurat/issues/3692
+})
+#Now if we look at the metadata of just one sample, we can see some new columns: "S.Score", "G2M.Score", and "Phase", which indicates the predicted cell cycle score of each nuclei
+head(sample.list$`S1_HP`[[]])
+
+```
+
+
+# 3.9.5 SCTransform (normalise for cell cycle stage)
+
+
+Apply sctransform normalization again to remove confounding sources of variation: i.e. cell cycle stage (https://satijalab.org/seurat/articles/sctransform_v2_vignette.html)
+
+NOTE: Please check you have the glmGamPoi package installed and loaded! Otherwise you will get lots of warnings and the analysis will take hours. So load the pachage again just in case.
+
+```{r SCTransform normalization 2 regressing out cell cycle stage, results = "hide"}
+
+#| cache = TRUE #pre-save the results for the future to not re-run the chunk on knitr (unless there are changes to the chunk)
+
+library(glmGamPoi)
+
+# Do a bit of a junk file cleanup before running this if needed. Code below
+gc(reset=TRUE)
+
+# Regress out variation due to cell cycle stage, by including "S.Score" and "G2M.Score" as variables to regress out.
+
+sample.list <- lapply(X = sample.list, FUN = function(x) {
+  x <- SCTransform(x,
+                   vst.flavor = "v2", #use the "v2" version of SCTransform
+                   conserve.memory = TRUE,
+                   vars.to.regress = c("S.Score", "G2M.Score"),  # could also regress on "percent.mt" if you hadn't removed these genes
+                   variable.features.n = "all",
+                   method = "glmGamPoi", #improves the speed of the learning procedure using glmGamPoi package
+                   assay = "RNA", # do not worry, you are reading the "counts" slot of the "RNA" assay here, NOT the newly generated "data" slot with the logtransformed values made using NormalizeData
+                   new.assay.name = "SCT") # this should overwrite the previous SCT assay (we didn't run SCT previously, so no worries anyway)
+})
+
+```
+
+```{r Sanity Check for Default Assay 2}
+
+#Please note that the default assay has been switched to "SCT"
+#For example:
+DefaultAssay(object = sample.list$`S1_HP`)
+
+```
+
+
+
+################################################################################
+
+    # 4. CELL CLUSTERING, PCA & UMAP 
+
+
+Before we can run Doubletfinder we need to first identify putative clusters within each sample. 
+
+This involves a few steps:
+
+  1) Generate a PCA (look at the elbowplot and adjust the number of PCs to be used going forward)
+  2) Select the best number of dimensions (PCs) to be used going forward by consulting an Elbowplot of PCs from PCA
+  3) Generate a UMAP
+  4) Cluster Cells
+
+"lapply": (https://stackoverflow.com/questions/65133609/name-multiple-plots-with-lapplyggplot-ggtitle-with-nested-list-name-accordin)
+FindNeighbours function: (https://satijalab.org/seurat/reference/findneighbors)
+Clustering: (https://satijalab.org/seurat/articles/pbmc3k_tutorial.html)
+
+
+```{r identify no of PCs for PCA}
+
+#| cache = TRUE #pre-save the results for the future to not re-run the chunk on knitr (unless there are changes to the chunk)
+
+## 1. Linear dimension reduction (PCA)
+
+# Run PCA for all of your samples individually with 50 PCs
+sample.list <-lapply(X = sample.list, FUN = function(x) {x <- RunPCA(x, dims = 1:50)})
+
+## 2. Generate Elbowplot -> allows us to choose no of PCs 
+ 
+# Plot stDEV for each PC using an Elbowplot (based on the 50 PCs used to generate the PCA in the previous step)
+lapply(seq_along(sample.list), FUN = function(x) {
+  ElbowPlot(sample.list[[x]], ndim = 50) +
+    ggtitle(names(sample.list)[x]) # label the plots by sample name (the name of each Seurat object in AS.list)
+})
+
+```
+
+Look for the point at which the curve bends appreciably towards a horizontal line ("cut" at "elbow" kink)
+
+Looking at my graphs the kinks are around 5-10 PCs for HP and 15 for LO -> will go with 15 for the PCA graph since LO is the valuable data here
+
+```{r identify cell clusters in each sample, message = FALSE}
+
+#| cache = TRUE #pre-save the results for the future to not re-run the chunk on knitr (unless there are changes to the chunk)
+
+## 3 Make a UMAP
+
+sample.list <- lapply(X = sample.list, FUN = function(x) {
+  x <- RunUMAP(x, dims = 1:15) # Use 15 PCs (based on Elbowplot above)
+})
+
+## 4 Cluster cells
+
+# Cluster the cells in each sample into preliminary groups
+# First thing to do is to calculate the neighbourhood overlap (Jaccard index) between every cell and its k.param nearest neighbors (https://satijalab.org/seurat/reference/findneighbors)
+
+sample.list <- lapply(X = sample.list, FUN = function(x) {
+  x <- FindNeighbors(x, dims = 1:15) # use the same number of dimensions as used for UMAP
+})
+
+# Use neighborhood info to figure out which cells belong together in a cluster. The resolution parameter sets the "granularity" of the clustering, so higher values will give you more clusters (https://satijalab.org/seurat/articles/pbmc3k_tutorial.html)
+sample.list <- lapply(X = sample.list, FUN = function(x) {
+  x <- FindClusters(x, resolution = 0.4) # "default" resolution in 0.4-0.6
+})
+
+# Plot the UMAP, for each sample
+lapply(X = sample.list, FUN = function(x) {
+DimPlot(x, reduction = "umap", split.by = "sample", 
+        label = TRUE, pt.size = 0.1) + NoLegend() #label the clusters, set point size=0.1,and don't add a legend to the plot 
+})
+
+```
+
+
+NOTE: Steps 3 & 4 are normally preliminary UMAPs if we have >2 samples. That is because the clustering info is needed by DoubletFinder to make artificial heterotropic doublets (i.e., doublets formed from the combination of two cells from different clusters/cell types). After the DoubletFinder filtering step, we are integrating the data and basically making an "average" UMAP with all the samples in one map (which is the final "true" map.
+
+
+################################################################################
+
+
+    # 5. DOUBLET FINDER
+
+
+Doubletfinder (https://github.com/chris-mcginnis-ucsf/DoubletFinder) is a program that lets you find potential "doublets", that is cell barcodes that actually contain the RNA of more than one cell/nucleus. 
+
+NOTE1: DoubletFinder has to be run on "clean" data (aka cleared of low-quality cell clusters) -> so after removing cells which do not have 200 or more features, and only including features in 3 or more cells, removing cells with low RNA UMIs and high % mtDNA reads, and after running RunPCA() and RunUMAP()
+
+NOTE2: Do not apply DoubletFinder to aggregated scRNA-seq data representing multiple distinct samples. For example, if you run DoubletFinder on aggregated data representing WT and mutant cell lines sequenced across different lanes, artificial doublets will be generated from WT and mutant cells, which cannot exist in your data. These artificial doublets will skew results. Notably, it is okay to run DoubletFinder on data generated by splitting a single sample across multiple lanes.
+
+DoubletFinder is sensitive to heterotypic doublets (Doublets formed from transcriptionally-distinct cell states) but is insensitive to homotypic doublets (Doublets formed from transcriptionally-similar cell states). 
+
+
+DoubletFinder has 4 steps:
+1) Generate artificial doublets from existing scRNA-seq data
+2) Pre-process merged real-artificial data
+3) Perform PCA and use the PC distance matrix to find each cell's proportion of artificial k nearest neighbors (pANN)
+4) Rank order and threshold pANN values according to the expected number of doublets
+
+There are several key parameters to run DoubletFinder:
+
+pN - proportion of artificial doublets that are created by DoubletFinder from your sample's cells (so basically the program just picks two cells randomly from your data and merges their UMI/feature counts together). DoubletFinder isn't affected much by this parameter, so the authors' suggest setting pN=0.25 for all DoubletFinder applications and instead optimizing the pK parameter.
+
+pK - this is the size of the cell's "neighbourhood" in gene expression space when calculating the proportion of artificial nearest neighbours score (pANN score). The pANN score is simply the number of artificial doublets in a cell's neighbourhood divided by the total number of cells in the cell's neighbourhood. So the idea is that if a cell has a lot of artificial doublets as neighbours then it is probably a doublet too! The neighbourhood size is the most important parameter to get right, so this is done by testing for the best pK using paramSweep.
+
+
+## 5.1 First we want to clean the workspace & free up some memory 
+
+We only want to keep the list generated pre-UMAP step (aka the sample.list)
+
+```{r clean up memory}
+
+# Clean up memory (remove everything except sample.list to free up some memory)
+rm(list=setdiff(ls(), "sample.list"))
+
+```
+
+
+## 5.2 Now we are going to simulate the best DF parameters for the analysis -> simulate pN/pK parameters
+
+
+More info: 
+pK identification: (https://rdrr.io/github/chris-mcginnis-ucsf/DoubletFinder/man/paramSweep.html)
+          -no ground-truth=we don't know which cells are really doublets
+          -paramSweep "Performs pN-pK parameter sweeps" on a 10,000-cell subset of a pre-processed Seurat object (or entire data if data has <10,000 cells)
+          -Results are fed into 'summarizeSweep' and 'find.pK' functions during optimal pK parameter selection workflow.
+          
+SummariseSweep: (https://rdrr.io/github/chris-mcginnis-ucsf/DoubletFinder/man/summarizeSweep.html)
+
+So here we are basically telling R to run a simulation on our data, to test a few parameters and determine what is best to use in the actual DoubletFinder analysis.
+
+
+```{r doubletfinder simulate best parameters, message=FALSE, results = 'hide'}
+
+#| cache = TRUE #pre-save the results for the future to not re-run the chunk on knitr (unless there are changes to the chunk)
+
+# pK Identification (Parameters tested: pN = 0.05-0.3, pK = 0.0005-0.3)
+# use the same number of dimensions (PCs) as used for UMAP
+sweep.res.list_sample <- lapply(X = sample.list, FUN = function(x) {
+  x <- paramSweep_v3(x, PCs = 1:15, sct = TRUE)
+})
+
+
+# Run summarizeSweep = "Summarizes results from doubletFinder_ParamSweep, computing the bimodality coefficient across pN and pK parameter space."
+sweep.stats.list_sample <- lapply(X = sweep.res.list_sample, FUN = function(x) {
+  x <- summarizeSweep(x, GT = FALSE)
+})
+
+# Calculate the mean-variance-normalized bimodality coefficient (BCmvn) of pANN distributions produced using the parameter sweeps above. BCmvn can be used to identify the pK that separates singlets and doublets the best. Basically you want a high value of the BCmvn metric for a particular pK value which indicates it is the one we want to use for our doublet detections.
+bcmvn.list_sample <- lapply(X = sweep.stats.list_sample, FUN = function(x) {
+  x <- find.pK(x)
+})
+
+#Convert pK column to numeric from factor
+#We want pK values to be listed as numbers because later on we're going to find the highest value
+bcmvn.list_sample <- lapply(X = bcmvn.list_sample, FUN = function(x) {
+  x$pK <- as.numeric(as.character(x$pK))
+  return(x)
+})
+
+```
+
+In the graph above Y axis=BCmetric and X axis=pK. We will remake the same graph below and it will be labelled but it will be an un-liked dot plot.
+
+
+## 5.3 After the simulation we want to choose the best pK value (automoatically done by code)
+
+
+```{r doubletfinder choose best pK value}
+
+#| cache = TRUE #pre-save the results for the future to not re-run the chunk on knitr (unless there are changes to the chunk)
+
+# Now we'll plot the BCmvn values for each sample
+lapply(seq_along(bcmvn.list_sample), FUN = function(x) {
+ ggplot(bcmvn.list_sample[[x]], aes(pK, BCmetric)) +
+    geom_point() +
+    ggtitle(names(bcmvn.list_sample)[x]) # title the plots by sample (the name of each list of BCmvn values)
+})
+
+# Find the maximum BCmvn value for each sample
+# So using dplyr please filter the bcmvn dataframe for the maximum value in the BCmetric column, then just select the pK value, and then "pull" to convert the column to a vector
+pK <- lapply(X = bcmvn.list_sample, FUN = function(x) {
+  x %>% dplyr::filter(BCmetric == max(BCmetric)) %>% dplyr::select(pK) %>% pull(pK)
+})
+
+```
+
+In the graph above we want to look for the best pK value, and that is the pK value which corresponds to the highest MCmetric value (so the highest point on the plot).
+
+NOTE: the script below chooses this value automatically, so we do not need to input it. This was just more or less for our info.
+
+
+## 5.4 Find doublets in our artificial data (with and without homotypic doublets)
+
+
+The number of doublets we expect in our samples is given by the number of cells in our sample (the number of rows in our Seurat's metadata) multiplied by the doublet formation rate we expect for our sample. The doublet formation rate is an important parameter (and should normally be adjusted for each sample). For Parse we should expect < 3% doublet formation rate, but in the lab we saw even lower values, sometimes < 1% for samples.
+
+DoubletFinder is pretty bad at identifying homotypic doublets (doublets formed from combining two cells of the same type), and so the number of doublets we expect based on the Poisson distribution is actually an overestimation of the doublets that DoubletFinder can be expected to find -> estimate the proportion of homotypic doublets we'd expect given the clustering we did above for each sample. 
+
+For inferring the homotypic doublet proportion we'll just rely upon the "unsupervised clustering" we performed on our cells above as recommended by the DoubletFinder paper since we don't know the cell types yet.
+
+NOTE: We will need to find and refere to column in R in the chunk below. That is because some column names can change based on the set parameters and it is a pain to look it up (especially for more samples with diff parameters). Here is a guide to do that: https://stackoverflow.com/questions/21781596/refer-to-the-last-column-in-r
+
+Below we will run DoubletFinder twice. Once without homotypic doublets and once with and we want to use the adjusted scores when we are assuming homotypic doublets because that is more stringent since we are getting rid of more data.
+
+
+```{r doubletfinder find doublets, message = FALSE, results = 'hide'}
+
+#| cache = TRUE #pre-save the results for the future to not re-run the chunk on knitr (unless there are changes to the chunk)
+
+## 1 Number of expected doublets given a Poisson distribution
+
+nExp_poi <- lapply(X = sample.list, FUN = function(x) {
+  x <- round(0.04*nrow(x@meta.data))  ## Assuming 4% doublet formation rate
+})
+
+## 2 Homotypic Doublet Proportion Estimate
+
+homotypic.prop <- lapply(X = sample.list, FUN = function(x) {
+  x <- modelHomotypic(x@meta.data$seurat_clusters)
+})
+
+## 3 Estimate the number of heterotypic doublets in each of our samples
+
+    # We do this by multiplying the number of doublets we expect (given Poisson distribution) by 1 - the proportion of expected homotypic doublets (as calculated above), and then round the results.
+    # Use "mapply" to apply this analysis to multiple samples using different parameters for each sample
+    # Use "SIMPLIFY = FALSE" to keep the output in a list format (rather than simplifying to a vector) for consistency
+nExp_poi.adj <- mapply(function(x,y) round(x*(1-y)), x = nExp_poi, y = homotypic.prop, SIMPLIFY = FALSE)
+
+## 4 Run DoubletFinder with varying classification stringencies
+
+    # Use no of PCs as determined using Elbowplot above (so Pcs=10 for me)
+    # Set set pN to 0.25 (value specified in the DoubletFinder manual)
+    # Set pK to the one with the highest BCmvn score as determined above (automatically set)
+    # Use the Poisson distribution based expected number of doublets (not excluding homotypic doublets yet)
+    # Make sure to set "sct=TRUE" because we normalized our data using SCTransform originally 
+sample.list <- mapply(function(x,y,z) doubletFinder_v3(x, PCs = 1:10, pN = 0.25, pK = y, nExp = z, reuse.pANN = FALSE, sct = TRUE), x = sample.list, y = pK, z = nExp_poi)
+
+# We need the name of the second last column in the metadata (aka column giving you the pANN score)
+# We can ask for the names of the meta.data in reverse (rev) and then ask for the second value to give the second last column name
+pANN_name <- lapply(X = sample.list, FUN = function(x) {
+  x <- rev(names(x@meta.data))[2]
+})
+
+## 5 Run doubletfinder again(excluding homotypic doublets this time)
+
+    # Use the pANN scores calculated already by setting reuse.pANN to the column of the metadata for each sample 
+    # Use same parameters as before + set the number of expected doublets (nExp) to that calculated after adjusting for homotypic doublets (nExp_poi.adj)
+sample.list <- mapply(function(x,y,z,w) doubletFinder_v3(x, PCs = 1:10, pN = 0.25, pK = y, nExp = z, reuse.pANN = w, sct = TRUE), x = sample.list, y = pK, z = nExp_poi.adj, w = pANN_name)
+
+#Sanity check -> make sure the number of doublets identified in the metadata matches the number expected based on nExp_poi.adj
+test <- lapply(X = sample.list, FUN = function(x) {
+  x <- x@meta.data %>%
+    select(tail(names(.), 1)) %>%
+    table()
+})
+
+# We need the name of the last column in the metadata which is the column giving you the groupings (Singlet/Doublet)
+#We can ask for the names of the meta.data in reverse (rev) and then ask for the first value to give the last column name
+Doublet_name <- lapply(X = sample.list, FUN = function(x) {
+  x <- rev(names(x@meta.data))[1]
+})
+
+# Make this easier to plot -> replace the last column in the metadata (which corresponds to the doubletfinder assignments using the homotypic-adjustment) to a common name for all samples, just to make it easier to reference when plotting. You've kept the name of the column though above with "Doublet_name".
+sample.list <- lapply(X = sample.list, FUN = function(x) {
+  names(x@meta.data)[ncol(x@meta.data)] <- "Homo_Adj_Doub_Ass"; # take the names of the columns of the metadata, and specify the column number equal to the number of columns in the metadata (i.e. the last column), and we're going to name this column now "Homo_Adj_Doub_Ass"
+  x # now print out the data for each sample and save to LV.list
+})
+
+```
+
+
+# 5.5 Plot artificially-filtered data on UMAP (pre-real filtering)
+
+
+Now that we have done all the checks and adjustments on our simulated data, we can visualize what the DoubletFinder filtering will do to our real data before we actually run the filters. 
+
+```{r plot doubletfinder results on UMAP}
+
+#plot the umap again, but group cells by their assignment as a "Doublet" or "Singlet" based on homotypic adjusted DoubletFinder results
+lapply(seq_along(sample.list), FUN = function(x) {
+ DimPlot(sample.list[[x]], reduction = "umap", group.by = "Homo_Adj_Doub_Ass", label = TRUE, pt.size = 0.1) + NoLegend() +
+    ggtitle(names(sample.list)[x]) # title the plots by sample (the name of each list of BCmvn values)
+})
+
+```
+
+For the graph above, singlets are in blue and doublets are in red. The doublet removing step should help clean up the data a bit and make clusters a bit more defined (sometimes).
+
+
+## 5.6 Filter out the doublets from our real dataset
+
+
+After checking that the DoubletFinder filter works well in our simulation, we can safely filter out the doublets from our real dataset. We tell R to basically just keep the cells which are marked as "singlets" and discard everything that is a "doublet"
+
+```{r filter-out doublets}
+
+#Filter out doublets from our dataset:
+sample.list_NoDoublets <- lapply(X = sample.list, FUN = function(x) {
+  subset(x, subset = Homo_Adj_Doub_Ass == "Singlet")
+})
+
+```
+
+Best to do a little check to see that everything ran properly. 
+
+```{r doubletfinder sanity check}
+
+# Check that the number of samples in the new Seurat files is the number of Singlets from your doubletfinder analysis:
+test
+lapply(X = sample.list_NoDoublets, FUN = function(x) {
+  x <- nrow(x@meta.data)
+})
+
+```
+
+
+################################################################################
+
+
+    # 6. Data integration (for 2 or more samples) -PART 1
+    
+    
+Basically during the integration step we want to get all our sample data together into one single list/file again and then we want to do the "DIMENSIONAL REDUCTION & CLUSTERING" step again and re-plot the UMAP as an average map of all the samples. The samples that we use for this step all need to pass the QC, be filtered and without doublets. This step is usually memory-intensive on PCs.
+
+For more info on integration steps and the code go to Sarah's GitHub code for Seurat analysis.
+and here: https://hbctraining.github.io/scRNA-seq_online/lessons/06_integration.html
+
+
+```{r Clean up memory before integration}
+
+rm(list=setdiff(ls(), "sample.list_NoDoublets"))
+
+```
+
+So here I ran the integration step on the full dataset (sample.integrated <- IntegrateData(anchorset = anchors, normalization.method = "SCT")) which gave me the below error: 
+
+"Merging dataset 1 into 5
+Extracting anchors for merged samples
+Finding integration vectors
+Finding integration vector weights
+Error in idx[i, ] <- res[[i]][[1]] :
+number of items to replace is not a multiple of replacement length"
+
+This is aparently for having too low cell numbers in some groups. Sometimes when cell count of a sample (sample/orig.ident) is smaller than 200 you have to adjust the k.filter, otherwise it won't run (makes data a bit less reliable, but it seems to work). However, if you have under 100 cells per sample, it gives the error above. 
+
+Explanation from Github: "It is generally okay to decrease those parameters if you have to. You can think of k.weight as a smoothing parameter. A value of 100 means each cell will be transformed by a weighted combination of the nearest 100 anchors. The assumption is that there is some amount of randomness/sparsity in the data, making it desirable to combine anchors in the same neighborhood. If you set k.weight very low, you will have less smoothing and are basically assuming the information in each of your cells is more reliable/complete. This might be the case for your data, but for most single-cell RNA assays there is a good deal of sparsity"
+
+So I will try to split my data into two at this point. I will put all HP into one list and all LO into another and then find anchors separately for each group. 
+
+
+```{r Split samples into HP and LO}
+
+# Define the sample values for HP and LO groups
+HP_samples <- c("S1_HP", "S2_HP", "S5a_HP", "S5b_HP", "S7_HP", "S8_HP")
+LO_samples <- c("S3_LO", "S4_LO", "S9_LO", "S10_LO", "S11_LO", "S12_LO")
+
+# Initialize empty lists to store the subsets
+HP.list_NoDoublets <- list()
+LO.list_NoDoublets <- list()
+
+# Loop through the combined list and split based on the sample names
+for (seurat_obj in sample.list_NoDoublets) {
+  sample_name <- seurat_obj@meta.data$sample[1]  
+  
+  if (sample_name %in% HP_samples) {
+    HP.list_NoDoublets <- c(HP.list_NoDoublets, list(seurat_obj))
+  } else if (sample_name %in% LO_samples) {
+    LO.list_NoDoublets <- c(LO.list_NoDoublets, list(seurat_obj))
+  }
+}
+
+# Check the lengths of the resulting lists
+print(paste("HP.list_NoDoublets has", length(HP.list_NoDoublets), "elements"))
+print(paste("LO.list_NoDoublets has", length(LO.list_NoDoublets), "elements"))
+
+```
+
+
+```{r Save the split dataset}
+
+#I will save the two files because the integration step is really heavy and it might crash R or the PC. Better to import the data again and continue rather than re-do the whole analysis.
+
+# Save the HP list to an .rds file
+saveRDS(HP.list_NoDoublets, file = "HP.list_NoDoublets.rds")
+
+# Save the LO list to an .rds file
+saveRDS(LO.list_NoDoublets, file = "LO.list_NoDoublets.rds")
+
+```
+
+
+################################################################################
+
+```{r Session Info}
+
+#Packages and versions for reference
+sessioninfo::session_info()
+
+```
+
+################################################################################
+
+CONTINUE IN PART 2
+
+FINAL NOTE: The remaining repositories will just have LO data. AT this point, I split the data and analyzed the HP and Lo separately, but because the HP data was unsuitable for analysis, there is no point in publishing the HP repositories. They are almost identical to the Lo ones.
+
+

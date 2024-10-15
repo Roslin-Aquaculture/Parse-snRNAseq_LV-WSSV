@@ -1,0 +1,442 @@
+---
+title: "L vannamei WSSV challenge snRNAseq for transcriptomic analysis of - Parse Biosciences WT_mega v2 kit - PART 8 - Plot DEGs by group"
+author: "Alexandra Florea"
+date: "2024-06-20"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+    
+
+PART 8 ---- Plot differential gene expression between different treatments and conditions by cluster using dotplot - LO
+
+
+    # 1. PRE-RUN PREP 
+    
+Resources:
+
+https://satijalab.org/seurat/reference/dotplot
+https://divingintogeneticsandgenomics.com/post/clustered-dotplot-for-single-cell-rnaseq/
+https://divingintogeneticsandgenomics.com/post/how-to-make-a-multi-group-dotplot-for-single-cell-rnaseq-data/
+
+Publication from Sarah Salisbury with good dotplot examples:
+https://www.biorxiv.org/content/10.1101/2023.10.15.562030v1.full
+
+Sarah's repositories for dotplots (same plots from the paper above):
+
+https://github.com/SarahSalisbury/Atlantic_Salmon_vs_Coho_Salmon_Lice_Response_snRNAseq/blob/master/STEP_2_SEURAT/PLOTS/Dotplots/Timepoints_vs_cell_types_dotplot_multiple_cell_types.Rmd
+https://github.com/SarahSalisbury/Atlantic_Salmon_vs_Coho_Salmon_Lice_Response_snRNAseq/blob/master/STEP_2_SEURAT/PLOTS/Dotplots/Timepoints_vs_cell_types_dotplot_single_cell_type.Rmd
+
+## 1.1 Prep the environment
+
+
+```{r Set working environment in R}
+
+# Set working directory (where the outputs will be sent)
+knitr::opts_knit$set(root.dir = 'your_file_path/Seurat_out')
+
+# Prevent scientific notation output 
+options(scipen=999)
+# set seed for reproducibility (UMAPs use seed of 42)
+set.seed(42)
+
+```
+
+
+## 1.2 Load all the necessary packages
+
+```{r Load packages}
+
+# load the libraries we need
+
+library(Seurat) # to run single cell analyses
+library(tidyverse) # helps to transform and better present data
+library(ggplot2) # to make plots
+library(dplyr) # to manipulate data frames
+library(cowplot) # to arrange plots in a grid
+library(data.table) # to use %like%
+library(patchwork)
+
+```
+
+## 1.3  Load the data (From PART 6)
+
+
+Make sure the data is in R's specified current working directory."
+
+
+```{r load rds}
+
+LO_integrated_with_groups <- readRDS("LO_integrated_with_groups.rds")
+
+# Set assay
+DefaultAssay(LO_integrated_with_groups) <- "SCT"
+
+```
+
+
+################################################################################
+
+
+  # 2. Set up my Seurat file
+
+
+## 2.1 Make combined control group
+
+
+```{r Combined control}
+
+# Check the unique values in sample_type to understand the current structure
+unique(LO_integrated_with_groups$sample_type)
+
+# Replace "FC" and "IC" with "FIC"
+LO_integrated_with_groups$sample_type[LO_integrated_with_groups$sample_type %in% c("FC", "IC")] <- "FIC"
+
+# Verify the changes
+unique(LO_integrated_with_groups$sample_type)
+
+#We will use sample_type as control vs infected
+
+```
+
+## 2.2 Custom cluster names
+
+
+```{r Rename clusters}
+
+# Define the new cluster names
+new_cluster_names <- c("Visceral", "Secret", "Interoceptor", "Nervous 1", "Unkown 1", "Nervous 2", 
+                       "Endo-epi 1", "Digest/secret", "Unkown 2", "Spheroid", "Immune-like", 
+                       "Myocytes 1", "Haemocytes", "Connect/fib", "Stress/dying", "Myocytes 2", "Endo-epi 2")
+
+# Assign new names to old cluster levels
+names(new_cluster_names) <- levels(Idents(LO_integrated_with_groups))
+
+# Rename the clusters in the Seurat object
+LO_integrated_with_groups <- RenameIdents(LO_integrated_with_groups, new_cluster_names)
+
+# Set the new identities as active
+LO_integrated_with_groups$cluster_names <- Idents(LO_integrated_with_groups)
+
+# Print the new cluster identities to verify the changes
+print(table(Idents(LO_integrated_with_groups)))
+
+```
+
+
+## 2.3 FEED samples (FIC & FW)
+
+
+```{r Get the feed data}
+
+# Subset the Seurat object based on the "sample_type" column
+LO_feed <- subset(LO_integrated_with_groups, subset = sample_type %in% c("FIC", "FW"))
+
+# Verify the new object
+print(LO_feed)
+
+# Set assay
+DefaultAssay(LO_feed) <- "SCT"
+
+```
+
+
+## 2.3.1 Feed all top markers
+
+
+```{r Set up the markers - feed general}
+
+# Define original and new marker names
+# Make sure there are no duplicated markers. For me I had LOC113808118 aka EGR1.
+# I also had 2 different gene LOC matched to Slc2a1 so I named one Slc2a1_a and one Slc2a1_b
+
+original_markers_feed <- c(
+  "LOC113820875", "LOC113810937", "LOC113801213", "LOC113822647", "LOC113830516", 
+  "LOC113809056", "LOC113828054", "LOC113828541", "LOC113811784", "LOC113811069",
+  "LOC113808118", "LOC113805724", "LOC113823073", "LOC113830510", "LOC113814499",
+  "LOC113800918", "LOC113808698", "LOC113816132", "LOC113810290")
+
+new_markers_feed <- c(
+  "LOC113820875", "LOC113810937", "Kynu", "LOC113822647", "Slc2a1_a", 
+  "A2m", "LOC113828054", "LOC113828541", "Slk", "LOC113811069",
+  "Egr1", "Kat6a", "LOC113823073", "Slc2a1_b",
+  "Hr3", "Fax", "Atf3", "Rgs2", "LOC113810290")
+
+# Create a named vector for renaming
+marker_rename_feed <- setNames(new_markers_feed, original_markers_feed)
+
+```
+
+```{r Marker expression dotplot - feed general}
+
+# Simple dot plot with up- and down-regulated genes split by control vs infected feed
+LO_dotplot_feed <- DotPlot(LO_feed, features = original_markers_feed, 
+                           cols = c("darkorange2", "darkorchid4"), 
+                           dot.scale = 8, split.by = "sample_type") +
+                   RotatedAxis() +
+                   scale_x_discrete(labels = marker_rename_feed) +  # Apply renamed labels
+                   theme(panel.background = element_rect(fill = "white", color = NA),
+                         plot.background = element_rect(fill = "white", color = NA),
+                         plot.title = element_text(hjust = 0.5)) +  # Center the title
+                   ggtitle("LO feed DE genes")  # Add title
+
+# Print the plot to the console
+print(LO_dotplot_feed)
+
+# Export the plot using ggsave
+ggsave("LO_dotplot_feed.png", plot = LO_dotplot_feed, width = 10, height = 10, dpi = 300)
+
+```
+
+
+## 2.3.2 Feed upregulated
+
+
+```{r Set up the markers we want to look at - feed upreg}
+
+# Define original and new marker names
+original_markers_feed_upreg <- c(
+  "LOC113820875", "LOC113810937", "LOC113801213", "LOC113822647", "LOC113830516", 
+  "LOC113809056", "LOC113828054", "LOC113828541", "LOC113811784", "LOC113811069")
+
+new_markers_feed_upreg <- c(
+  "LOC113820875", "LOC113810937", "Kynu", "LOC113822647", "Slc2a1_a", 
+  "A2m", "LOC113828054", "LOC113828541", "Slk", "LOC113811069")
+
+# Create a named vector for renaming
+marker_rename_feed_upreg <- setNames(new_markers_feed_upreg, original_markers_feed_upreg)
+
+```
+
+```{r Marker expression dotplot - feed upreg}
+
+# Simple dot plot with up- and down-regulated genes split by control vs infected feed
+LO_dotplot_feed_upreg <- DotPlot(LO_feed, features = original_markers_feed_upreg, 
+                           cols = c("darkorange2", "darkorchid4"), 
+                           dot.scale = 8, split.by = "sample_type") +
+                   RotatedAxis() +
+                   scale_x_discrete(labels = marker_rename_feed_upreg) +  # Apply renamed labels
+                   theme(panel.background = element_rect(fill = "white", color = NA),
+                         plot.background = element_rect(fill = "white", color = NA),
+                         plot.title = element_text(hjust = 0.5)) +  # Center the title
+                   ggtitle("LO feed upregulated DE genes")  # Add title
+
+# Print the plot to the console
+print(LO_dotplot_feed_upreg)
+
+# Export the plot using ggsave
+ggsave("LO_dotplot_feed_upreg.png", plot = LO_dotplot_feed_upreg, width = 8, height = 10, dpi = 300)
+
+```
+
+
+## 2.3.3 Feed downregulated
+
+
+```{r Set up the markers we want to look at - feed downreg}
+
+# Define original and new marker names
+original_markers_feed_downreg <- c(
+  "LOC113808118", "LOC113805724", "LOC113823073", "LOC113830510", "LOC113814499",
+  "LOC113800918", "LOC113808698", "LOC113816132", "LOC113810290")
+
+new_markers_feed_downreg <- c(
+  "Egr1", "Kat6a", "LOC113823073", "Slc2a1_b",
+  "Hr3", "Fax", "Atf3", "Rgs2", "LOC113810290")
+
+# Create a named vector for renaming
+marker_rename_feed_downreg <- setNames(new_markers_feed_downreg, original_markers_feed_downreg)
+
+```
+
+```{r Marker expression dotplot - feed downreg}
+
+# Simple dot plot with up- and down-regulated genes split by control vs infected feed
+LO_dotplot_feed_downreg <- DotPlot(LO_feed, features = original_markers_feed_downreg, 
+                           cols = c("darkorange2", "darkorchid4"), 
+                           dot.scale = 8, split.by = "sample_type") +
+                   RotatedAxis() +
+                   scale_x_discrete(labels = marker_rename_feed_downreg) +  # Apply renamed labels
+                   theme(panel.background = element_rect(fill = "white", color = NA),
+                         plot.background = element_rect(fill = "white", color = NA),
+                         plot.title = element_text(hjust = 0.5)) +  # Center the title
+                   ggtitle("LO feed downregulated DE genes")  # Add title
+
+# Print the plot to the console
+print(LO_dotplot_feed_downreg)
+
+# Export the plot using ggsave
+ggsave("LO_dotplot_feed_downreg.png", plot = LO_dotplot_feed_downreg, width = 8, height = 10, dpi = 300)
+
+```
+
+
+## 2.4 INJECTION samples (FIC & IW)
+
+
+```{r Clean the environment and memory}
+
+# Remove all object except main data file
+rm(list=setdiff(ls(), "LO_integrated_with_groups"))
+
+# Clean unused memory
+gc()
+
+```
+
+```{r Get the injection data}
+
+# Subset the Seurat object based on the "sample_type" column
+LO_inj <- subset(LO_integrated_with_groups, subset = sample_type %in% c("FIC", "IW"))
+
+# Verify the new object
+print(LO_inj)
+
+# Set assay
+DefaultAssay(LO_inj) <- "SCT"
+
+```
+
+
+## 2.4.1 Inection all top markers
+
+
+```{r Set up the markers - inj general}
+
+# Define original and new marker names
+# LOC113821338 or Znf346 was duplicated so I removed it
+original_markers_inj <- c(
+  "LOC113806074", "LOC113820546", "LOC113822468", "LOC113824253", "LOC113816480",
+  "LOC113808206", "LOC113821338", "LOC113804208", "LOC113809104",
+  "LOC113808232", "LOC113817693", "LOC113806458", "LOC113823118", "LOC113830046",
+  "LOC113827240", "LOC113828230", "LOC113812984", "LOC113806050", "LOC113803285")
+
+new_markers_inj <- c(
+  "Mlc-c", "LOC113820546", "Rya", "LOC113824253", "Meng",
+  "LOC113808206", "Znf346", "Nt5c2", "Myh3",
+  "LOC113808232", "LOC113817693", "Cart", "Comp", "Slco5a1",
+  "Ntrk2", "Slc1a1", "LOC113812984", "Elavl2", "LOC113803285")
+
+# Create a named vector for renaming
+marker_rename_inj <- setNames(new_markers_inj, original_markers_inj)
+
+```
+
+```{r Marker expression dotplot - inj general}
+
+# Simple dot plot with up- and down-regulated genes split by control vs infected feed
+LO_dotplot_inj <- DotPlot(LO_inj, features = original_markers_inj, 
+                           cols = c("darkgoldenrod1", "blue3"), 
+                           dot.scale = 8, split.by = "sample_type") +
+                   RotatedAxis() +
+                   scale_x_discrete(labels = marker_rename_inj) +  # Apply renamed labels
+                   theme(panel.background = element_rect(fill = "white", color = NA),
+                         plot.background = element_rect(fill = "white", color = NA),
+                         plot.title = element_text(hjust = 0.5)) +  # Center the title
+                   ggtitle("LO injection DE genes")  # Add title
+
+# Print the plot to the console
+print(LO_dotplot_inj)
+
+# Export the plot using ggsave
+ggsave("LO_dotplot_inj.png", plot = LO_dotplot_inj, width = 10, height = 10, dpi = 300)
+
+```
+
+
+## 2.4.2 Inj upregulated
+
+
+```{r Set up the markers - inj upregulated}
+
+# Define original and new marker names
+original_markers_inj_upreg <- c(
+  "LOC113806074", "LOC113820546", "LOC113822468", "LOC113824253", "LOC113816480",
+  "LOC113808206", "LOC113821338", "LOC113804208", "LOC113809104")
+
+new_markers_inj_upreg <- c(
+  "Mlc-c", "LOC113820546", "Rya", "LOC113824253", "Meng",
+  "LOC113808206", "Znf346", "Nt5c2", "Myh3")
+
+# Create a named vector for renaming
+marker_rename_inj_upreg <- setNames(new_markers_inj_upreg, original_markers_inj_upreg)
+
+```
+
+```{r Marker expression dotplot - inj upreg}
+
+# Simple dot plot with up- and down-regulated genes split by control vs infected feed
+LO_dotplot_inj_upreg <- DotPlot(LO_inj, features = original_markers_inj_upreg, 
+                           cols = c("darkgoldenrod1", "blue3"), 
+                           dot.scale = 8, split.by = "sample_type") +
+                   RotatedAxis() +
+                   scale_x_discrete(labels = marker_rename_inj_upreg) +  # Apply renamed labels
+                   theme(panel.background = element_rect(fill = "white", color = NA),
+                         plot.background = element_rect(fill = "white", color = NA),
+                         plot.title = element_text(hjust = 0.5)) +  # Center the title
+                   ggtitle("LO injection upregulated DE genes")  # Add title
+
+# Print the plot to the console
+print(LO_dotplot_inj_upreg)
+
+# Export the plot using ggsave
+ggsave("LO_dotplot_inj_upreg.png", plot = LO_dotplot_inj_upreg, width = 8, height = 10, dpi = 300)
+
+```
+
+
+## 2.4.3 Inj downregulated
+
+
+```{r Set up the markers - Inj downreg}
+
+# Define original and new marker names
+original_markers_inj_downreg <- c(
+  "LOC113808232", "LOC113817693", "LOC113806458", "LOC113823118", "LOC113830046",
+  "LOC113827240", "LOC113828230", "LOC113812984", "LOC113806050", "LOC113803285")
+
+new_markers_inj_downreg <- c(
+  "LOC113808232", "LOC113817693", "Cart", "Comp", "Slco5a1",
+  "Ntrk2", "Slc1a1", "LOC113812984", "Elavl2", "LOC113803285")
+
+# Create a named vector for renaming
+marker_rename_inj_downreg <- setNames(new_markers_inj_downreg, original_markers_inj_downreg)
+
+```
+
+```{r Marker expression dotplot - Inj downreg}
+
+# Simple dot plot with up- and down-regulated genes split by control vs infected feed
+LO_dotplot_inj_downreg <- DotPlot(LO_inj, features = original_markers_inj_downreg, 
+                           cols = c("darkgoldenrod1", "blue3"), 
+                           dot.scale = 8, split.by = "sample_type") +
+                   RotatedAxis() +
+                   scale_x_discrete(labels = marker_rename_inj_downreg) +  # Apply renamed labels
+                   theme(panel.background = element_rect(fill = "white", color = NA),
+                         plot.background = element_rect(fill = "white", color = NA),
+                         plot.title = element_text(hjust = 0.5)) +  # Center the title
+                   ggtitle("LO injection downregulated DE genes")  # Add title
+
+# Print the plot to the console
+print(LO_dotplot_inj_downreg)
+
+# Export the plot using ggsave
+ggsave("LO_dotplot_inj_downreg.png", plot = LO_dotplot_inj_downreg, width = 8, height = 10, dpi = 300)
+
+```
+
+
+################################################################################
+
+```{r Session Info}
+
+#Packages and versions for reference
+sessioninfo::session_info()
+
+```
+
+################################################################################
+
+END OF ANALYSIS

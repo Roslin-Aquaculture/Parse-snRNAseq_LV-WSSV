@@ -1,0 +1,282 @@
+---
+title: "L vannamei WSSV challenge snRNAseq for transcriptomic analysis of - Parse Biosciences WT_mega v2 kit - PART 4 - DEG for cluster identification"
+author: "Alexandra Florea"
+date: "2024-06-03"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+PART 4 ---- Harmony, gene differential expression and cluster labels - LO
+
+
+Now that we have our UMAPs we can start looking at gene differential expression between the clusters. 
+Since I have the LO_integrated_with_groups data ready to load I will continue the analysis on it
+
+
+STEPS:
+
+1) Change the seurat and seurat object version, load packages and import the data
+2) Run Harmony first to have a better look at the cluster differentiation between the experimental groups
+3) Ask Seurat to find the top 20 differential expressed genes in each cluster (stuff that is high;y expressed in that one cluster and not in any other)
+4) Google the genes and find out in which cell type they are mostly expressed (some clusters might be unknows, and that's fine)
+5) We want to replot the UMAPS with the ids=new label names (the names that we will allocate to each cluster). Maybe choose some fancy colors for the clusters
+
+
+    # 1. PRE-RUN PREP 
+    
+    
+## 1.1 Prep the environment
+
+```{r Set working environment in R}
+
+# Set working directory (where the outputs will be sent)
+knitr::opts_knit$set(root.dir = 'your_file_path/Seurat_out')
+
+# Prevent scientific notation output 
+options(scipen=999)
+# set seed for reproducibility (UMAPs use seed of 42)
+set.seed(42)
+
+```
+
+
+## 1.2. Change the Seurat version to 4.1.0 and Seurat Object to 4.0.1
+
+Ok. So there is an error that appeared in Seurat v 4.3 or v4.4 that they never fixed because they released v5. Unfortunately for Parse and the rest of the analysis up until this point we can't run anything before v 4.4.0. However, for this part the 4.4.0 gives errors for both Harmony and DGE due to the SCT assay.
+
+###At this step of Harmony:
+
+"LO.integrated.with.groups   <- FindVariableFeatures(LO.integrated.with.groups , selection.method = "vst", nfeatures = 2000)"
+
+#We get this error:
+
+"Error: SCT assay is comprised of multiple SCT models. To change the variable features, please set manually with VariableFeatures<-"
+
+###At this step of DGE:
+
+"LO.markers <- FindAllMarkers(LO.integrated.with.groups, assay = "SCT", slot = "data", only.pos = TRUE, min.pct = 0.25, return.thresh = 0.01, pseudocount.use = 0.001, logfc.threshold = 0.25, test.use = "LR", latent.vars = "sample")"
+
+#We get this error: 
+
+"Warning: No DE genes identified
+Warning: The following tests were not performed: 
+Warning: When testing 0 versus all:
+	Object contains multiple models with unequal library sizes. Run `PrepSCTFindMarkers()` before running `FindMarkers()`.
+Warning: When testing 1 versus all:"
+
+So we will do something a bit unconventional and downgrade the Seurat version to before this bug.
+
+So go ahead and remove the Seurat and Seurat packages and install the new ones:
+
+```{r Downgrade Seurat to v4.1}
+
+#First make sure we do not have other unwanted versions of seurat and seuratobject installed
+
+#remove.packages("Seurat")
+#NOTE: Make sure the packages disapear from R/library/ folder. You can delete them manually if they do not
+#Restart R at this point
+
+# Now we can install Seurat 4.1.0 And Seurat Object 4.0
+#Install Seurat Object BEFORE seurat (Seurat will not override the Seurat Object that we install first)
+
+#library(remotes)
+#remotes::install_version("SeuratObject", "4.0.4", repos = c("https://satijalab.r-universe.dev", getOption("repos")))
+#remotes::install_version("Seurat", "4.1.0", repos = c("https://satijalab.r-universe.dev", getOption("repos")))
+
+#At this point restart R and R studio
+
+#check you installed the correct version of Seurat
+
+#library(Seurat)
+#sessioninfo::session_info()
+
+```
+
+
+## 1.3 Load all the necessary packages
+
+```{r Load packages}
+
+# load the libraries we need
+
+library(Seurat) # to run single cell analyses
+library(tidyverse) # helps to transform and better present data
+library(Seurat) # to run single cell analyses
+library(ggplot2) # to make plots
+library(dplyr) # to manipulate data frames
+library(cowplot) # to arrange plots in a grid
+library(data.table) # to use %like%
+library(glmGamPoi) # helps to speed up SCTransform step
+
+# Install the package only first time use. Remove the # and run the below code:
+#install.packages("harmony")
+
+library(harmony)
+
+```
+
+## 1.4  Load the data (already filtered, integrated and with extra metadata from PART 3)
+
+Make sure the data is in R's specified current working directory."
+
+
+```{r load rds}
+
+LO.integrated.with.groups <- readRDS("LO_integrated_with_groups.rds")
+
+```
+
+
+## 1.5 Set Default Assay
+
+For performing differential expression after integration, we switch back to the SCT data
+# https://github.com/satijalab/seurat/issues/1534
+# https://satijalab.org/seurat/articles/integration_introduction.html
+
+```{r set default assay}
+
+#switch back to the SCT data 
+DefaultAssay(LO.integrated.with.groups) <- "SCT"
+
+```
+
+
+################################################################################
+
+
+   # 2 Run harmony (optional)
+
+
+If there is lots off non-overlap between the samples on the UMAPs, you might want to run Harmony at this point to help the data look better. 
+I do not want to do that now, but the code is below:
+
+NOTE: Potential bug fix for this: Error: SCT assay is comprised of multiple SCT models. To change the variable features, please set manually with VariableFeatures<-
+
+"seurat.obect1$ident <- NULL"     Then try run the umap
+
+```{r Run Harmony}
+
+#Select normalisation method & run PCA
+
+#LO.integrated.with.groups  <- NormalizeData(LO.integrated.with.groups , normalization.method = "LogNormalize", scale.factor = 10000)
+
+#LO.integrated.with.groups   <- FindVariableFeatures(LO.integrated.with.groups , selection.method = "vst", nfeatures = 2000)
+
+#all.genes <- rownames(LO.integrated.with.groups)
+
+#LO.integrated.with.groups  <- ScaleData(LO.integrated.with.groups , features = all.genes)
+
+#LO.integrated.with.groups   <- RunPCA(LO.integrated.with.groups , features = VariableFeatures(object = LO.integrated.with.groups  ))
+
+#ElbowPlot(LO.integrated.with.groups , ndims=50)
+
+ 
+
+#Harmony line, use the column with your metadata, for the Infection status. Add this in the group.by.vars=""
+
+#LO.integrated.with.groups <- RunHarmony(LO.integrated.with.groups, group.by.vars = "sample") 
+
+ 
+
+#Run the UMAP on the harmony reduction
+
+#LO.integrated.with.groups <- RunUMAP(LO.integrated.with.groups, reduction = "harmony", dims = 1:19)
+
+#Same with Findneighbours
+
+#LO.integrated.with.groups <- FindNeighbors(LO.integrated.with.groups, reduction = "harmony", dims = 1:19)
+
+#LO.integrated.with.groups <- FindClusters(LO.integrated.with.groups, resolution = 0.4)
+
+#Visualise the plots here
+
+#DimPlot(LO.integrated.with.groups, reduction = "umap",label=T, label.size = 5) +
+#  ggtitle("LO_Harmony") +
+#  theme(legend.position = "right", plot.title = element_text (hjust = 0.5, vjust = 1.5))
+
+#DimPlot(LO.integrated.with.groups, reduction = "umap", group.by = "inf_status", label = FALSE) +
+#  ggtitle("LO Infection_Harmony") +
+#  theme(legend.position = "right", plot.title = element_text (hjust = 0.5, vjust = 1.5))
+
+# Generate the plots and assign it to a variable
+
+#LO_harmony <- DimPlot(LO.integrated.with.groups, reduction = "umap",label=T, label.size = 5) +
+#  ggtitle("LO_Harmony") +
+#  theme(legend.position = "right", plot.title = element_text (hjust = 0.5, vjust = 1.5))
+
+#LO_harmony_by_infection_status <- DimPlot(LO.integrated.with.groups, reduction = "umap", group.by = "inf_status", label = FALSE) +
+#  ggtitle("LO Infection_Harmony") +
+#  theme(legend.position = "right", plot.title = element_text (hjust = 0.5, vjust = 1.5))
+
+# Save the plots using ggsave
+
+#ggsave(filename = "LO_harmony.png", plot = LO_harmony, width = 10, height = 8, dpi = 300) 
+
+#ggsave(filename = "LO_harmony_by_infection_status.png", plot = LO_harmony_by_infection_status, width = 10, height = 8, dpi = 300) 
+
+
+```
+
+
+################################################################################
+
+
+   # 3. Find Markers_Diferential gene expression between the clusters
+
+
+Here are some links to what we will do:
+  For the DE marker detection: https://satijalab.org/seurat/reference/prepsctfindmarkers
+  Find cluster markers: see: https://github.com/satijalab/seurat/issues/1057
+  SCT assay: https://satijalab.org/seurat/articles/sctransform_v2_vignette.html
+  
+Finding the markers is very heavy on the PC. Make sure no other apps are open and be patient. This might take a little while (5min-30min per cluster. If you have other apps open it is up to 1h per cluster).
+
+
+```{r Differential Expression}
+
+#| cache = TRUE #pre-save the results for the future to not re-run the chunk on knitr
+
+# First prep for SCT based DE marker detection:
+LO.integrated.with.groups <- PrepSCTFindMarkers(LO.integrated.with.groups, assay = "SCT")
+
+# Find markers for every cluster compared to all remaining cells, report only the positive ones, run a logistic regression model with sample as a latent variable, use "SCT" assay and the "data" slot
+
+LO.markers <- FindAllMarkers(LO.integrated.with.groups, assay = "SCT", slot = "data", only.pos = TRUE, min.pct = 0.25, return.thresh = 0.01, pseudocount.use = 0.001, logfc.threshold = 0.25, test.use = "LR", latent.vars = "sample")
+                             
+# save to file (this will have all the DE gene markers)
+write.table(LO.markers, file="DE-LO-full.txt", sep="\t")
+
+```
+
+
+```{r Top 20 marker selection}
+
+#I want to make a selection of just the top 10 markers max that are significant (P value <0.05)
+top20markers <- LO.markers %>% dplyr::group_by(cluster) %>% filter(p_val_adj < 0.05) %>% top_n(n = 20, wt = avg_log2FC)
+
+# save to file (this will have all the DE gene markers)
+write.table(top20markers, file="top20markers_LO.txt", sep="\t")
+
+```
+
+Copy paste the info from the top20markers.txt file into an excel spreadsheet and have a look at the role of each gene using NCBI (lots of manual work!)
+
+Now we have our Gene Differential expression table for each cluster. We will continue to use this table in the last part of the analysis. 
+
+
+################################################################################
+
+```{r Session Info}
+
+#Packages and versions for reference
+sessioninfo::session_info()
+
+```
+
+################################################################################
+
+CONTINUE IN PART 5

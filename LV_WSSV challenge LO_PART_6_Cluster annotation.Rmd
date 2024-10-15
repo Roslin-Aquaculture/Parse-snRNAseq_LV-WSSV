@@ -1,0 +1,597 @@
+---
+title: "L vannamei WSSV challenge snRNAseq for transcriptomic analysis of - Parse Biosciences WT_mega v2 kit - PART 6 - Cluster info"
+author: "Alexandra Florea"
+date: "2024-06-17"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+PART 6 ---- Annotate the UMAP clusters after investigation and look at cluster stats (UMI, features, DGE..etc) - LO
+
+
+    # 1. PRE-RUN PREP 
+    
+## 1.1 Prep the environment
+
+```{r setup working environment}
+
+# Set working directory
+knitr::opts_knit$set(root.dir = 'your_file_path/Seurat_out/')
+
+# Prevent scientific notation output
+options(scipen=999)
+
+#set seed for reproducibility
+set.seed(42) #note that UMAPs use seed of 42
+
+```
+
+
+## 1.2 Load all the necessary packages
+
+
+```{r load packages}
+
+# Load up libraries
+library(Seurat) # to run single cell analyses
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(cowplot)
+
+```
+
+
+## 1.3  Load the data (the one from PART 5 that contains all our changes)
+
+
+```{r load Seurat object}
+
+LO_integrated_with_groups <- readRDS("your_file_path/Seurat_out/LO_integrated_with_groups.rds")
+
+```
+
+
+## 1.4 Set Default Assay
+
+
+For performing differential expression after integration, we switch back to the SCT data
+# https://github.com/satijalab/seurat/issues/1534
+# https://satijalab.org/seurat/articles/integration_introduction.html
+
+```{r set default assay}
+
+# SCT -> for performing differential expression after integration
+DefaultAssay(LO_integrated_with_groups) <- "SCT"
+
+```
+
+
+## 1.5 Load the Differentially Expressed Markers
+
+Here we load the full table of differential expressed genes that we made in Step3 of Seurat analysis.
+
+```{r load markers}
+
+#These are your full markers list
+LO_DEG <- fread(file = "F:/Felina/PhD/1_WSSV/Experiments/snRNAseq_Parse/Seurat_out/DE-LO-full_higher_rez.txt", sep="\t", stringsAsFactors = FALSE)
+
+```
+
+
+################################################################################
+
+
+    # 2. Annotate the UMAP with cell cluster names
+    
+
+## 2.1  Remove troublesome clusters
+
+First check again the UMI and features for the new cluster rezolution:
+
+
+```{r Quick look at UMI & features no per cluster to verify cluster 7}
+
+# Fetch the number of UMIs and features for each cell along with their cluster assignments
+cluster_data <- FetchData(LO_integrated_with_groups, vars = c("nCount_RNA", "nFeature_RNA", "seurat_clusters"))
+
+# Convert to data frame for easier manipulation
+cluster_data <- as.data.frame(cluster_data)
+
+# Summarize the number of UMIs and features for each cluster
+cluster_summary <- cluster_data %>%
+  group_by(seurat_clusters) %>%
+  summarise(
+    total_UMIs = sum(nCount_RNA),
+    mean_UMIs = mean(nCount_RNA),
+    median_UMIs = median(nCount_RNA),
+    total_features = sum(nFeature_RNA),
+    mean_features = mean(nFeature_RNA),
+    median_features = median(nFeature_RNA),
+    cell_count = n()
+  )
+
+# Print the summary
+print(cluster_summary)
+
+```
+
+Ok. So we could remove cluster 11 based on the gene analysis, but the UMI/features looks ok. So I am not sure.
+
+First though, we need to rename the clusters:
+
+
+## 2.2 Add names to clusters
+
+
+So we had a look at our clusters using the top 20 features per cluster (our cluster makers)
+
+NOTE: Most genes are named based on the first function they were associated with in the organism in which they were first discovered (often humans). So lots of genes are noted as cancer causing, because there’s been a lot of study on cancer and the genes underlying this in humans. But many genes will have functions beyond what their name indicates.
+
+This is a nice site to use to look up genes: https://www.proteinatlas.org/
+(The Human Protein Atlas) -> with this you can see what cell types each gene has been expressed in (in humans though)
+Also this one for all species: https://www.uniprot.org/uniprotkb 
+Also good old googling and articles
+
+Make the best decision for cluster identity based on what you can find. For me, shrimp have very poorly annotated genome and lots of my markers are uncharacterized loci. Also lots of genes (majority actually) are human, mouse, drosophila-like, so not much can be said about  the genes' or proteins' actual role in shrimp cells. 
+
+But nonetheless, these are the clusters I found:
+
+```{r Add cell cluster names}
+
+# Check the existing cluster levels in the metadata
+old_cluster_levels <- levels(LO_integrated_with_groups$seurat_clusters)
+print(length(old_cluster_levels))  # Should be 17 if clusters are named 0 to 16
+
+# Define the new cluster names
+LO_cluster_ids <- c(
+    "Visceral-like cells", "Secretory or parenchymal-like cells", "Interoceptor-like cells", "Nervous system cells 1","Unkown 1", "Nervous system cells 2", "Endo-epithelial cells 1", "Digestive/secretory-like cells","Unkown 2", "Lympoid spheroid cells", "Immune-like cells", "Myocytes 1", "Haemocytes", "Connective-fibroblast-like cells", "Stressed/dying cells", "Myocytes 2", "Endo-epithelial cells 2")
+
+# Verify the length matches
+if (length(old_cluster_levels) == length(LO_cluster_ids)) {
+    # Create a new column with cluster names
+    LO_integrated_with_groups$cluster_names <- factor(
+        LO_integrated_with_groups$seurat_clusters,
+        levels = old_cluster_levels,
+        labels = LO_cluster_ids
+    )
+    
+    # Verify the new cluster identities
+    print(table(LO_integrated_with_groups$cluster_names))
+    
+    # Check that there are 17 unique new identities
+    if (length(unique(LO_integrated_with_groups$cluster_names)) == 17) {
+        print("Successfully assigned new cluster names.")
+    } else {
+        stop("Number of unique new cluster names is not 17 as expected.")
+    }
+    
+} else {
+    stop("Number of new cluster names does not match the number of old cluster IDs")
+}
+
+```
+
+
+## 2.3 Annotated UMAP
+
+
+```{r UMAP with named clusters}
+
+# Create and print the UMAP plot with renamed clusters (repel = TRUE so the text on the UMAP is not overlapping and nice)
+umap_plot <- DimPlot(LO_integrated_with_groups, reduction = "umap", label = TRUE, group.by = "cluster_names", repel = TRUE) + 
+  labs(title = "Lympoid Organ UMAP with Annotated Clusters") + 
+  theme(legend.position = "right",
+        plot.title = element_text(hjust = 0.5)) # Center the title
+
+# Display graph to console
+print(umap_plot)
+
+# Save the plot to the current working directory
+ggsave("LO_UMAP_Annotated_Clusters.png", plot = umap_plot, width = 12, height = 7)
+
+```
+    
+
+################################################################################
+
+
+    # 3. Graphs and plots
+
+
+## 3.1 Get some data on the sample.
+
+
+```{r data info}
+
+# Check how many remaining cells you have
+table(LO_integrated_with_groups$sample_type)
+
+# How many umi/cell on average (https://www.statology.org/r-mean-by-group/)
+LO_integrated_with_groups@meta.data %>%
+  group_by(sample_type) %>%
+  summarise_at(vars(nCount_RNA), list(name = mean))
+
+# How many feature/cell on average
+LO_integrated_with_groups@meta.data %>%
+  group_by(sample_type) %>%
+  summarise_at(vars(nFeature_RNA), list(name = mean))
+
+# Check the sample names 
+unique(LO_integrated_with_groups@meta.data$sample_type) # run in console
+
+# Plot number of UMIs per sample
+plotumispersample <- VlnPlot(object = LO_integrated_with_groups, features = c("nCount_RNA"), group.by = "sample_type", pt.size = 0) +
+  stat_summary(fun = "mean",
+               geom = "crossbar",
+               width = 0.5)
+
+png("LO_samples_umis.png", res=600, width=4200, height=3200) # Save the plot
+plotumispersample
+dev.off()
+
+# Plot number of features per sample
+plotfeaturespersample <- VlnPlot(object = LO_integrated_with_groups, features = c("nFeature_RNA"), group.by = "sample_type", pt.size = 0) +
+  stat_summary(fun = "mean",
+               geom = "crossbar",
+               width = 0.5)
+
+png("LO_samples_features.png", res=600, width=4200, height=3200) # Save the plot
+plotfeaturespersample
+dev.off()
+
+```
+
+
+## 3.2 Play with UMIs/features data 
+
+
+```{r UMI/features data}
+
+# Generate a plot of the number of UMIs per cluster
+plotumispercluster <- VlnPlot(LO_integrated_with_groups, features = 'nCount_RNA', pt = 0, group.by = "cluster_names")
+VlnPlot(LO_integrated_with_groups, features = 'nCount_RNA', group.by = "cluster_names")
+
+png("LO_clusters_umis.png", res=600, width=6000, height=3500)
+print(plotumispercluster)
+dev.off()
+
+# Generate a plot of the number of features per cluster
+plotfeaturespercluster <- VlnPlot(LO_integrated_with_groups, features = 'nFeature_RNA', pt = 0, group.by = "cluster_names")
+VlnPlot(LO_integrated_with_groups, features = 'nFeature_RNA', group.by = "cluster_names")
+
+png("LO_clusters_features.png", res=600, width=6000, height=3500)
+print(plotfeaturespercluster)
+dev.off()
+
+# Generate a plot of the mtDNA percentage per cluster (cells)
+plotmtDNAperclustercells <- VlnPlot(LO_integrated_with_groups, features = 'percent.mt', pt = 0, group.by = "cluster_names") +
+  stat_summary(fun = "mean",
+               geom = "crossbar",
+               width = 0.5)
+
+png("LO_clusters_mtDNA.png", res=600, width=6000, height=3500)
+print(plotmtDNAperclustercells)
+dev.off()
+
+# Generate a plot of the mtDNA percentage per cluster (individual cells)
+plotmtDNApercluster <- VlnPlot(LO_integrated_with_groups, features = 'percent.mt', group.by = "cluster_names") +
+  stat_summary(fun = "mean",
+               geom = "crossbar",
+               width = 0.5)
+
+png("LO_clusters_mtDNA_cells.png", res=600, width=6000, height=3500)
+print(plotmtDNApercluster)
+dev.off()
+
+```
+
+
+## 3.3 Top 20 differentially expressed genes per cluster
+
+
+```{r top 20 DE genes}
+
+# Generate top 20 genes for each cluster based on avg_log2FC (only keep genes with an adjusted p-value less than 0.05)
+markers <- LO_DEG %>% dplyr::group_by(cluster) %>% top_n(n = 20, wt = avg_log2FC) %>% filter(p_val_adj < 0.05)
+
+# Remove duplicate gene column
+markers <- markers[,-1]
+
+# Make output into a dataframe
+markers <- as.data.frame(markers)
+
+# Make a violin plot showing expression of these top 20 genes for each cluster in all clusters.
+# First find the name of all clusters:
+clusters <- unique(markers %>% select(cluster) %>% pull(cluster))
+
+# We're going to save several plots in a list so generate an empty list
+plot_list_vln_cluster <- list()
+
+# for loop to create plots for each cluster
+for (i in 1:length(clusters)) {
+  # make list of features to plot for each cluster
+  features <- markers %>%
+    filter(cluster == clusters[i]) %>%
+    pull(gene)
+  
+  # create violin plot
+  pl1 <- VlnPlot(LO_integrated_with_groups, features = features, pt.size = 0, assay = "SCT", slot = "data") +
+    theme(legend.position = "right") # center legend to middle right
+  
+  plot_list_vln_cluster[[i]] <- pl1 # add the plot to the list
+}
+
+# Relabel each plot in your list with the cluster name:
+names(plot_list_vln_cluster) <- LO_cluster_ids
+
+# Print each plot in the list
+print(plot_list_vln_cluster)
+
+# Save each of the plots as a .tiff file
+for (i in 1:length(plot_list_vln_cluster)) {
+  file_name <- paste("Violin_plot_for_cluster_", clusters[i], ".tiff", sep = "")
+  tiff(file_name, height = 24, width = 24, units = 'in', res = 600)
+  print(plot_list_vln_cluster[[i]])
+  dev.off()
+}
+
+```
+
+
+```{r Heatmap}
+
+#Note that for some reason the heatmap does not work with the re-named marker list. So I will run it with the original cluster marker ID (LOCxxxxxxxxx). It also does not work at the end of the code anymore for some reason so I moved the code up here wheer it runs (don't ask why :) ). The error I was getting is : Error in .subscript.2ary(x, i, j, drop = drop) : subscript out of bounds
+
+# Custom markers for heatmap
+markers_heatmap <- c("LOC113811918", "LOC113823268", "LOC113810987", "LOC113800644", "LOC113829198", "LOC113810560", "LOC113814456", "LOC113830547", "LOC113821749", "LOC113809714", "LOC113821283", "LOC113822679", "LOC113823934", "LOC113802906", "LOC113811679", "LOC113813611", "LOC113803555")
+
+### Single cell heatmap of feature expression
+
+heatmappercluster <- DoHeatmap(subset(LO_integrated_with_groups, downsample = 100), features = markers_heatmap, size = 3)
+DoHeatmap(subset(LO_integrated_with_groups, downsample = 100), features = markers_heatmap, size = 3)
+
+png("LO_markers_heatmap.png", res=600, width=4200, height=4200) #I tried to make it like a cube shape for my data to look nice
+heatmappercluster
+dev.off()
+
+```
+
+
+## 3.4 Composition of clusters by replicate
+
+
+This should help us get a better look at the clusters.Note, remember I have 17 clusters (0-17).
+Info on stacked barplot for replicate metrics: #https://github.com/satijalab/seurat/issues/962
+
+Below is the code for future reference. NOTE that I need the marker.jpeg graph at the end of the code, so I will run the chunk anyway!
+
+```{r top 2 DE genes}
+
+#Generate top 2 genes for each cluster based on avg_log2FC
+test2 <- as.data.frame(LO_DEG %>% dplyr::group_by(cluster) %>% top_n(n = 1, wt = avg_log2FC))
+
+#basic plot of clusters (stacked barplot for replicate metrics)
+ggplot(LO_integrated_with_groups@meta.data, aes(x=seurat_clusters)) + geom_bar() + theme_bw()
+
+#Set the order of clusters in dataset (levels=17 clusters)
+factor(LO_integrated_with_groups@meta.data$seurat_clusters, levels=c(seq(0,17)))
+LO_integrated_with_groups@meta.data$seurat_clusters <- factor(LO_integrated_with_groups@meta.data$seurat_clusters, levels=c(seq(0,17)))
+ggplot(LO_integrated_with_groups@meta.data, aes(x=seurat_clusters, fill=sample_type)) + geom_bar() + theme_bw()
+
+#Set custom order to dataset (levels=17 clusters)
+my_levels <- 0:17
+factor(LO_integrated_with_groups@meta.data$seurat_clusters, levels= my_levels)
+LO_integrated_with_groups@meta.data$seurat_clusters <- factor(LO_integrated_with_groups@meta.data$seurat_clusters, levels= my_levels)
+ggplot(LO_integrated_with_groups@meta.data, aes(x=seurat_clusters, fill=sample_type)) + geom_bar() + theme_bw()
+
+# Set the order of clusters to numerical order and ensure cluster names are set
+LO_integrated_with_groups@meta.data$seurat_clusters <- factor(
+  LO_integrated_with_groups@meta.data$seurat_clusters,
+  levels = sort(as.numeric(levels(as.factor(LO_integrated_with_groups@meta.data$seurat_clusters))))
+)
+
+# Ensure cluster names are correctly set in the metadata and ordered as desired
+LO_integrated_with_groups@meta.data$cluster_names <- factor(
+  LO_integrated_with_groups@meta.data$cluster_names,
+  levels = LO_cluster_ids
+)
+
+# Plot as proportion or percentage of cluster using cluster names
+ggplot(LO_integrated_with_groups@meta.data, aes(x=cluster_names, fill=sample_type)) + 
+  geom_bar(position = "fill") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+features <- test2$gene
+
+## Violin plot using cluster names
+
+# Define the custom order for cluster names
+custom_order <- c("Visceral-like cells", "Secretory or parenchymal-like cells", "Interoceptor-like cells", 
+                  "Nervous system cells 1", "Unkown 1", "Nervous system cells 2", "Endo-epithelial cells 1", 
+                  "Digestive/secretory-like cells", "Unkown 2", "Lympoid spheroid cells", "Immune-like cells", 
+                  "Myocytes 1", "Haemocytes", "Connective-fibroblast-like cells", "Stressed/dying cells", 
+                  "Myocytes 2", "Endo-epithelial cells 2")
+
+# Ensure the 'cluster_names' column in the metadata is a factor with the custom order
+LO_integrated_with_groups$cluster_names <- factor(LO_integrated_with_groups$cluster_names, levels = custom_order)
+
+# Generate the violin plot without sorting
+markers_plot <- VlnPlot(LO_integrated_with_groups, assay = "SCT", slot = "data", features = features, 
+                        stack = TRUE, flip = TRUE, group.by = "cluster_names") +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  ggtitle("Identity on x-axis")
+
+# Use plot_grid to join plots
+png("LO_markers.png", res=600, width=5200, height=5200)
+plot_grid(markers_plot)
+dev.off()
+
+```
+Just as a note, these are my actual cluster markers. NOTE THAT THEY ARE NOT THE TOP EXPRESSED GENE PER CLUSTER ALL THE TIME!
+
+"LOC113815644", "LOC113823268", "LOC113810987", "LOC113812183", "LOC113829198", "LOC113810560", 
+"LOC113803930", "LOC113809055", "LOC113821749", "QKC44-gp369", "QKC44-gp043", "KEG56-p12", 
+"LOC113823934", "LOC113827948", "LOC113825756", "LOC113810227", "LOC113826002"
+              
+And here is their gene symbol: 
+
+"Itga2b", "Tret1-2", "Glra4", "Glrb", "Trim9", "LOC113810560", "Srap", "Ces3", "Sqstm1", 
+"WSSV499", "WSSV049", "Cox1", "Tgase", "Gpis", "Ssa3", "Myh1", "Lhx1"
+
+## 3.5 Cluster visualisation by gene expression
+
+
+Make a few extra graphs focused on main gene markers or top expressed genes in the clusters.
+Code from: https://satijalab.org/seurat/articles/visualization_vignette.html
+
+These are the actual names for the top marker for each cluster in order: "Lgals", "Tret1-2", "Glra4", "Gbx2", "Trim9", "LOC113810560", "Brn", "Slc12a2", "Sqstm1", "LOC113809714", "Hectd1", "SSU rRNA", "Tgase", "Lama1", "Prodh", "Tnni1", "Megf6"
+
+```{r Marker list with custom gene names}
+
+### Make a "markers" with the marker gene in each cluster (aka highest expressed gene in each cluster based on avg_log2FC from "Top20Features.csv" file we generated earlier)
+LO_integrated_with_groups$groups <- sample(c("S3_LO", "S4_LO", "S9_LO", "S10_LO", "S11_LO", "S12_LO"), size = ncol(LO_integrated_with_groups), replace = TRUE)
+
+# Custom names for the markers
+original_markers <- c("LOC113811918", "LOC113823268", "LOC113810987", "LOC113800644", "LOC113829198", "LOC113810560", "LOC113814456", "LOC113830547", "LOC113821749", "LOC113809714", "LOC113821283", "LOC113822679", "LOC113823934", "LOC113802906", "LOC113811679", "LOC113813611", "LOC113803555")
+
+custom_names <- c("Lgals", "Tret1-2", "Glra4", "Gbx2", "Trim9", "LOC113810560", "Brn", "Slc12a2", "Sqstm1", "LOC113809714", "Hectd1", "SSU rRNA", "Tgase", "Lama1", "Prodh", "Tnni1", "Megf6")
+
+# Create a named vector for renaming
+marker_rename <- setNames(custom_names, original_markers)
+
+# Rename the genes in the Seurat object
+for (i in 1:length(marker_rename)) {
+  old_name <- names(marker_rename)[i]
+  new_name <- marker_rename[i]
+  rownames(LO_integrated_with_groups@assays$RNA@data) <- gsub(old_name, new_name, rownames(LO_integrated_with_groups@assays$RNA@data))
+  rownames(LO_integrated_with_groups@assays$SCT@data) <- gsub(old_name, new_name, rownames(LO_integrated_with_groups@assays$SCT@data))
+}
+
+# Update the markers in the LO_DEG list
+LO_DEG$gene <- marker_rename[LO_DEG$gene]
+
+# Check if markers are updated
+print(LO_DEG$gene)
+
+```
+```{r Feature plots}
+
+### UMI expression
+
+# Feature plot - visualize UMI expression throughout clusters (original code with large UMI scale)
+plotfeaturespersample <- FeaturePlot(LO_integrated_with_groups, features = 'nCount_RNA', pt.size = 0.5)
+FeaturePlot(LO_integrated_with_groups, features = 'nCount_RNA')
+
+png("LO_UMI_plot.png", res=600, width=4200, height=3200)
+plotfeaturespersample
+dev.off()
+
+# Feature plot - visualize UMI expression throughout clusters (modified for low UMi)
+plotfeaturespersample <- FeaturePlot(LO_integrated_with_groups, features = 'nCount_RNA', pt.size = 0.5) +
+    scale_color_gradientn(limits = c(0, 5000), colors = c("blue", "yellow", "red"), oob = scales::squish)
+
+png("LO_UMI_plot_v2.png", res=600, width=4200, height=3200)
+plotfeaturespersample
+dev.off()
+
+
+### Features expression
+
+# Feature plot - visualize features expression throughout clusters (original code)
+plotfeaturespersample <- FeaturePlot(LO_integrated_with_groups, features = 'nFeature_RNA', pt = 0.5)
+FeaturePlot(LO_integrated_with_groups, features = 'nFeature_RNA')
+
+png("LO_features_plot.png", res=600, width=4200, height=3200)
+plotfeaturespersample
+dev.off()
+
+# Feature plot - visualize features expression throughout clusters (modified for low features)
+plotfeaturespersample <- FeaturePlot(LO_integrated_with_groups, features = 'nFeature_RNA', pt.size = 0.5) +
+    scale_color_gradientn(limits = c(0, 3000), colors = c("blue", "yellow", "red"), oob = scales::squish)
+
+png("LO_features_plot_v2.png", res=600, width=4200, height=3200)
+plotfeaturespersample
+dev.off()
+
+
+### Marker gene expression
+
+plotfeaturespersample <- FeaturePlot(LO_integrated_with_groups, features = custom_names, ncol=3, pt.size = 0.01)
+FeaturePlot(LO_integrated_with_groups, features = custom_names, ncol=3, pt.size = 0.01)
+
+png("LO_markers_plot.png", res=600, width=5000, height=8000)
+plotfeaturespersample
+dev.off()
+
+```
+
+```{r Dot plots}
+
+# Dot plots - the size of the dot corresponds to the percentage of cells expressing the feature in each cluster. The color represents the average expression level (original code)
+
+dotplotpercluster <- DotPlot(LO_integrated_with_groups, features = custom_names) + RotatedAxis()
+DotPlot(LO_integrated_with_groups, features = custom_names) + RotatedAxis()
+
+png("LO_markers_dot_plot.png", res=600, width=6400, height=3200)
+dotplotpercluster
+dev.off()
+
+# Dot plots - (modified a bit for better visualisation, and pretty colors)
+
+dotplotpercluster <- DotPlot(LO_integrated_with_groups, features = custom_names) + 
+    scale_color_gradientn(limits = c(0, 3), colors = c("blue", "yellow", "red"), oob = scales::squish) +
+    RotatedAxis()
+
+png("LO_markers_dot_plot_v2.png", res=600, width=6400, height=3200)
+dotplotpercluster
+dev.off()
+
+```
+
+```{r Ridge plots}
+
+# Visualize single cell expression distributions in each cluster. 
+#Note, ridge plots (& violin plots) are very fiddly with dimensions. So modify the graph width and height until the ridge plots fit properly on the page, they are not too stretched or too into each other.
+
+ridgeplotpercluster <- RidgePlot(LO_integrated_with_groups, features = custom_names, ncol = 4)
+RidgePlot(LO_integrated_with_groups, features = custom_names, ncol = 4)
+
+png("LO_markers_ridge_plot.png", res=600, width=12000, height=12000)
+ridgeplotpercluster
+dev.off()
+
+```
+
+```{r Violin plots}
+
+#Violin plots for every cluster
+
+violinplotpercluster <- VlnPlot(LO_integrated_with_groups, features = custom_names, ncol=3, pt = 0) #pt=0 so the graph is clean
+VlnPlot(LO_integrated_with_groups, features = custom_names, ncol=3)
+
+png("LO_markers_violin_plot.png", res=600, width=8000, height=8000)
+violinplotpercluster
+dev.off()
+
+```
+
+
+################################################################################
+
+```{r Session Info}
+
+#Packages and versions for reference
+sessioninfo::session_info()
+
+```
+
+################################################################################
+
+CONTINUE IN PART 7

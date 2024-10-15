@@ -1,0 +1,252 @@
+---
+title: "L vannamei WSSV challenge snRNAseq for transcriptomic analysis of - Parse Biosciences WT_mega v2 kit - PART 2 - Data_integration"
+author: "Alexandra Florea"
+date: "2024-06-09"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+PART 2 ---- Data Integration for LO data
+
+
+    # 1. PRE-RUN PREP 
+
+
+## 1.1 Prep the environment
+
+
+```{r Set working environment in R}
+
+# Set working directory (where the outputs will be sent)
+knitr::opts_knit$set(root.dir = 'your_file_path/Seurat_out')
+# Prevent scientific notation output 
+options(scipen=999)
+# set seed for reproducibility (UMAPs use seed of 42)
+set.seed(42)
+
+```
+
+
+## 1.2.  Load all the neccesary packages for this analysis 
+
+
+```{r Load the previous packages}
+
+library(Seurat) # to run single cell analyses
+library(tidyverse) # helps to transform and better present data
+library(tidyseurat) # basically tidyverse for Seurat
+library(Matrix) # provides classes for matrices
+library(reticulate) # interoperability between Python and R
+library(clustree) # allows you to produce clustering trees
+library(gridExtra) # work with "grid" graphics
+library(ggplot2) # to make plots
+library(dplyr) # to manipulate data frames
+library(cowplot) # to arrange plots in a grid
+library(data.table) # to use %like%
+library(glmGamPoi) # helps to speed up SCTransform step
+library(DoubletFinder) # to detect doublets in our dataset
+library(RColorBrewer) # for fancy color pallets :) 
+library(gtools)  # For mixedsort function (tabulates samples in numerical order, rather than alphabetical. Useful when your samples are S1, S2, ..etc). This works automatically rather than us having to modify any chunks of code. For stuff like: "table(sample.raw$sample)"
+
+```
+
+
+## 1.3 Load the data (already filtered from PART 1)
+
+
+```{r Import the LO dataset we made in part 1}
+
+# Load the LO list from the .rds file in the current working directory
+LO.list_NoDoublets <- readRDS("LO.list_NoDoublets.rds")
+
+```
+
+
+################################################################################
+
+
+   # 2 Perform the integration step for LO
+
+
+```{r ids list}
+
+# Make list of IDs (of samples) to be used in the downstream analysis
+ids <- c("S3_LO", "S4_LO", "S9_LO", "S10_LO", "S11_LO", "S12_LO")
+
+```
+
+```{r Integrated feature selection, message = FALSE}
+
+# select features that are repeatedly variable across datasets for integration
+# note that nfeatures tells you how many features to include in analysis (default is 2000)
+# note also that we need to specify we used SCT as our normalization method
+
+features <- SelectIntegrationFeatures(object.list = LO.list_NoDoublets, nfeatures = 10000, normalization.method = "SCT")
+
+```
+
+```{r Prepare for integration and find anchors, message = FALSE}
+
+#| cache = TRUE #pre-save the results for the future to not re-run the chunk on knitr
+
+LO.list_NoDoublets <- PrepSCTIntegration(object.list = LO.list_NoDoublets, anchor.features = features)
+
+# Find anchors to facilitate integration
+#Possibly better to use 'reduction = "rpca"' (https://satijalab.org/seurat/articles/integration_rpca.html)
+
+LO.anchors <- FindIntegrationAnchors(object.list = LO.list_NoDoublets, anchor.features = features, dims = 1:30, normalization.method = "SCT", reduction = "rpca")
+
+```
+
+```{r Integration, message = FALSE}
+
+#| cache = TRUE #pre-save the results for the future to not re-run the chunk on knitr
+
+# this command creates an 'integrated' data assay
+LO.integrated <- IntegrateData(anchorset = LO.anchors, normalization.method = "SCT", dims = 1:30)
+
+# specify that we will perform downstream analysis on the corrected data note that the original (unmodified data still resides in the 'RNA' assay)
+DefaultAssay(LO.integrated) <- "integrated"
+
+```
+
+    # 3. Dimensional reduction & clustering
+
+We want to re-plot the UMAP after the DoubletFiltering:
+
+STEPS:
+1) Generate a PCA
+2) Select the best number of dimensions (PCs) to be used going forward by consulting an Elbowplot of PCs from PCA
+3) Generate a UMAP
+4) Cluster Cells
+
+## 3.1 Now that we've integrated our data, it's time to look for cell clusters again
+
+```{r dimensionality reduction, message = FALSE}
+
+## 3.1.1 Linear dimension reduction
+LO.integrated <- RunPCA(LO.integrated, dims = 1:50)
+
+```
+
+```{r Examine and visualize PCA results}
+
+# First print the five most informative features (nfeatures) for the first five PCA dimensions (PCs 1-5)
+print(LO.integrated[["pca"]], dims = 1:5, nfeatures = 5)
+
+# Now visualize the loadings for PCs 1 and 2
+VizDimLoadings(LO.integrated, dims = 1:2, reduction = "pca")
+
+# Now visualize the first two axes of the PCA
+DimPlot(LO.integrated, reduction = "pca", group.by = "sample")
+
+# Now visualize using a heatmap
+# Note that cells and features are ordered by PCA scores.
+# You can set "cells" to a value to show the most informative cells to a particular PC axis (speeds up plot generation considerably when this number is low)
+# Run for the first PC now
+DimHeatmap(LO.integrated, dims = 1, cells = 500, balanced = TRUE) # balanced = TRUE means you should plot an equal number of genes with both + and - scores, cells = 500 means plot the top 500 cells for this dimension
+
+# Now repeat heatmaps for first 15 PCs
+DimHeatmap(LO.integrated, dims = 1:15, cells = 500, balanced = TRUE)
+
+## 3.1.2. Check how many PCs you need with an Elbowplot
+ElbowPlot(LO.integrated, ndim = 50)
+
+```
+
+So 20 PCs is alright for my data
+
+```{r}
+
+## 3.1.3. Make a UMAP
+# use the number of dimensions as determined from Elbowplot
+LO.integrated <- RunUMAP(LO.integrated, dims = 1:20, verbose = FALSE)
+
+# Have a look at the UMAP
+DimPlot(LO.integrated, reduction = "umap", group.by = "sample")
+
+## 3.1.4. Cluster cells
+
+# First thing to do is to calculate the neighbourhood overlap (Jaccard index) between every cell and its k.param nearest neighbors (https://satijalab.org/seurat/reference/findneighbors)
+# use the same number of dimensions as used for UMAP
+LO.integrated <- FindNeighbors(LO.integrated, dims = 1:20)
+
+# Now we use that neighbourhood information to figure out which cells belong together in a cluster. The resolution parameter sets the "granularity" of the clustering, so higher values will give you more clusters. This seems like a bit of a dark art. https://satijalab.org/seurat/articles/pbmc3k_tutorial.html
+LO.integrated <- FindClusters(LO.integrated, resolution = 0.2) ###Potentially play with "resolution = 0.5"
+
+```
+
+
+## 3.2 New UMAPs
+
+
+Now we can save our filtered Seurat Object as an RDS file. 
+That means we can load the file into R at any point and start working on it downstream without having to start the analysis again.
+
+```{r save filtered data as .rds file}
+
+#Save the object
+saveRDS(LO.integrated, file = "LO.integrated.rds")
+
+```
+
+Now we can look at multiple versions of our UMAPs.
+We can play with the dot size, width and height to get a nice graph (some clusters can be better visualized if they are more spread-out)
+
+```{r plot UMAPs, message = FALSE}
+
+# Save plots to variables
+umap_clusters <- DimPlot(LO.integrated, reduction = "umap", pt.size = 0.15)
+umap_clusters_labeled <- DimPlot(LO.integrated, reduction = "umap", label = TRUE, pt.size = 0.15) + NoLegend()
+umap_origin <- DimPlot(LO.integrated, group.by = "sample", pt.size = 0.15)
+umap_cellcycle <- DimPlot(LO.integrated, group.by = "Phase", pt.size = 0.15)
+
+# Save plots to PNG files
+# Plot UMAP with clusters in a legend
+#This is a plain UMAP without any labels
+png("LO_UMAP_clusters.png", res=600, width=4800, height=3200)
+print(umap_clusters)
+dev.off()
+
+# Plot UMAP with clusters labeled on the plot
+#NOTE: Can set `label = TRUE` or use the LabelClusters function to help label individual clusters (once we know what they are in terms of cell type)
+png("LO_UMAP_clusters_names_on_cells.png", res=600, width=4800, height=3200)
+print(umap_clusters_labeled)
+dev.off()
+
+# Plot UMAP with cells coloured by sample origin
+png("LO_UMAP_origin.png", res=600, width=4800, height=3200)
+print(umap_origin)
+dev.off()
+
+# Plot UMAP with cells coloured by cell cycle stage
+#Here we want the cells belonging to diff cell cycles to be on top of each other
+png("LO_UMAP_cellcycle.png", res=600, width=4800, height=3200)
+print(umap_cellcycle)
+dev.off()
+
+# Print plots to the console
+print(umap_clusters)
+print(umap_clusters_labeled)
+print(umap_origin)
+print(umap_cellcycle)
+
+```
+
+
+################################################################################
+
+```{r Session Info}
+
+#Packages and versions for reference
+sessioninfo::session_info()
+
+```
+
+################################################################################
+
+CONTINUE IN PART 3

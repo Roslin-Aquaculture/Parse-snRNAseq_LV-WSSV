@@ -1,0 +1,369 @@
+---
+title: "L vannamei WSSV challenge snRNAseq for transcriptomic analysis of - Parse Biosciences WT_mega v2 kit - PART 3 - UMAPs & graphs"
+author: "Alexandra Florea"
+date: "2024-05-16"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+
+PART 3 ---- UMAPs with differential expression
+
+
+    # 1. PRE-RUN PREP 
+
+
+## 1.1 Prep the environment
+
+
+```{r Set working environment in R}
+
+# Set working directory (where the outputs will be sent)
+knitr::opts_knit$set(root.dir = 'your_file_path/Seurat_out')
+# Prevent scientific notation output 
+options(scipen=999)
+# set seed for reproducibility (UMAPs use seed of 42)
+set.seed(42)
+
+```
+
+
+## 1.2.  Load all the neccesary packages for this analysis 
+
+
+```{r Load packages}
+
+# load the libraries we need
+
+library(Seurat) # to run single cell analyses
+library(tidyverse)
+library(tidyseurat)
+library(Matrix)
+library(reticulate)
+library(clustree)
+library(gridExtra)
+library(ggplot2) # to make plots
+library(dplyr) # to manipulate data frames
+library(cowplot) # to arrange plots in a grid
+library(data.table) # to use %like%
+
+```
+
+
+## 1.3 Load the data (already filtered and integrated from PART 2)
+
+
+Make sure the data is in R's specified current working directory."
+
+```{r load rds}
+
+LO_integrated <- readRDS("LO.integrated.rds")
+
+```
+
+## 1.4 Set Default Assay
+
+
+For performing differential expression after integration, we switch back to the SCT data
+# https://github.com/satijalab/seurat/issues/1534
+# https://satijalab.org/seurat/articles/integration_introduction.html
+
+```{r set default assay}
+
+#switch back to the SCT data 
+DefaultAssay(LO_integrated) <- "SCT"
+
+```
+
+
+################################################################################
+
+
+   # 2. Add a few extra metadata columns
+
+
+My samples are (same name as specified in the split-pipe code):
+
+S3_LO=control feed LO
+S4_LO=control injection LO
+S9_LO=WSSV feed LO 1
+S10_LO=WSSV feed LO 2
+S11_LO=WSSV injection LO 1
+S12_LO=WSSV injection LO 2
+
+So we just have "sample" = "S3_LO", "S4_LO", "S9_LO", "S10_LO", "S11_LO", "S12_LO" as metadata for our samples
+1. I want to add a column that specifies the type of sample regarding of replicate numbers: "sample_type" =  "IF", "IC", "FW", "IW"
+2. I want to add a column that specifies the infection status: "inf_status" = "control" or "infected"
+3. I want to add a column that specifies the group the samples belong to: "inf_group" = "feed" or "injection"
+
+```{r Create a column with sample type}
+
+# Access the metadata of the Seurat object
+metadata <- LO_integrated@meta.data
+
+# Create the sample_name column based on the sample column
+metadata$sample_type <- ifelse(metadata$sample == "S3_LO", "FC",
+                         ifelse(metadata$sample == "S4_LO", "IC",
+                         ifelse(metadata$sample %in% c("S9_LO", "S10_LO"), "FW", "IW")))
+
+# Update the metadata in the Seurat object
+LO_integrated@meta.data <- metadata
+
+```
+
+```{r Create an infected status metadata column}
+
+# Access the metadata of the Seurat object
+metadata <- LO_integrated@meta.data
+
+# Create the Inf_status column based on the sample column
+metadata$inf_status <- ifelse(metadata$sample %in% c("S3_LO", "S4_LO"), "control", "infected")
+
+# Update the metadata in the Seurat object
+LO_integrated@meta.data <- metadata
+
+```
+
+```{r Create an infection group metadata column}
+
+# Access the metadata of the Seurat object
+metadata <- LO_integrated@meta.data
+
+# Create the group column based on the sample column
+metadata$inf_group <- ifelse(metadata$sample %in% c("S3_LO", "S9_LO", "S10_LO"), "feed", "injection")
+
+# Update the metadata in the Seurat object
+LO_integrated@meta.data <- metadata
+
+```
+
+
+################################################################################
+
+
+# 3. Look at some different UMAPs (visualise the data)
+
+
+Now that we have our UMAPs we can start looking at gene differential expression between the clusters. 
+
+
+## 3.1 Look at all the samples together
+
+
+```{r UMAP - all samples & replicates}
+
+#now plot umap, group by the identifier
+DimPlot(LO_integrated, reduction = "umap", group.by = "sample", label = FALSE, pt.size = 0.1) +
+             ggtitle("General map_LO") 
+
+# Create the UMAP plot
+umap_plot <- DimPlot(LO_integrated, reduction = "umap", group.by = "sample", label = FALSE, pt.size = 0.1)+
+             ggtitle("General map_LO")
+
+# Save the UMAP plot as a TIFF file in the current working directory
+ggsave(filename = "LO_UMAP_general.tiff", plot = umap_plot, device = "tiff", width = 8, height = 6, units = "in", dpi = 300)
+
+# Find out how many cells were plotted on the UMAP
+cell_counts <- ncol(LO_integrated)
+print(paste("Number of cells plotted on the UMAP:", cell_counts))
+
+```
+
+
+## 3.2 Look at all the samples together (no separate replicates)
+
+
+```{r UMAP - all samples & merged replicates}
+
+#now plot umap, group by the identifier
+DimPlot(LO_integrated, reduction = "umap", group.by = "sample_type", label = FALSE, pt.size = 0.1) +
+             ggtitle("LO sample type") 
+
+# Create the UMAP plot
+umap_plot <- DimPlot(LO_integrated, reduction = "umap", group.by = "sample_type", label = FALSE, pt.size = 0.1)+
+             ggtitle("LO sSample type")
+
+# Save the UMAP plot as a TIFF file in the current working directory
+ggsave(filename = "LO_UMAP_by_sample.tiff", plot = umap_plot, device = "tiff", width = 8, height = 6, units = "in", dpi = 300)
+
+# Count the number of cells in each "sample_type" group
+cell_counts <- table(LO_integrated@meta.data$sample_type)
+
+# Print the number of cells in each group
+print(cell_counts)
+
+```
+
+
+## 3.3 Look at feed vs injection
+
+
+```{r UMAP _ feed vs injection}
+
+#now plot umap, group by the identifier
+DimPlot(LO_integrated, reduction = "umap", group.by = "inf_group", label = FALSE, pt.size = 0.1) +
+             ggtitle("LO feed vs injection") 
+
+# Create the UMAP plot
+umap_plot <- DimPlot(LO_integrated, reduction = "umap", group.by = "inf_group", label = FALSE, pt.size = 0.1)+
+             ggtitle("LO feed vs injection")
+
+# Save the UMAP plot as a TIFF file in the current working directory
+ggsave(filename = "LO_UMAP_by_infection_group.tiff", plot = umap_plot, device = "tiff", width = 8, height = 6, units = "in", dpi = 300)
+
+# Count the number of cells in each "sample_type" group
+cell_counts <- table(LO_integrated@meta.data$inf_group)
+
+# Print the number of cells in each group
+print(cell_counts)
+
+```
+
+
+## 3.4 Look at control vs infected
+
+
+```{r UMAP _ control vs infected}
+
+#now plot umap, group by the identifier
+DimPlot(LO_integrated, reduction = "umap", group.by = "inf_status", label = FALSE, pt.size = 0.1) +
+             ggtitle("LO control vs infected") 
+
+# Create the UMAP plot
+umap_plot <- DimPlot(LO_integrated, reduction = "umap", group.by = "inf_status", label = FALSE, pt.size = 0.1)+
+             ggtitle("LO control vs infected")
+
+# Save the UMAP plot as a TIFF file in the current working directory
+ggsave(filename = "LO_UMAP_by_infection_status.tiff", plot = umap_plot, device = "tiff", width = 8, height = 6, units = "in", dpi = 300)
+
+# Count the number of cells in each "sample_type" group
+cell_counts <- table(LO_integrated@meta.data$inf_status)
+
+# Print the number of cells in each group
+print(cell_counts)
+
+```
+
+
+3.5 Spread-out UMAPs
+
+
+Ok. Now let's look at these maps again, but a bit more spread-out
+
+
+3.5.1 Re-run UMAP parameters
+
+
+```{r Adust UMAP parameters}
+
+# Adjust UMAP parameters for more spread out points
+LO_integrated <- RunUMAP(LO_integrated, dims = 1:30, n.neighbors = 50, min.dist = 0.9)
+
+```
+
+
+## 3.5.2 Look at all the samples together
+
+
+```{r UMAP - all samples & replicates 2}
+
+#now plot umap, group by the identifier
+DimPlot(LO_integrated, reduction = "umap", group.by = "sample", label = FALSE, pt.size = 0.1) +
+             ggtitle("General map_LO") 
+
+# Create the UMAP plot
+umap_plot <- DimPlot(LO_integrated, reduction = "umap", group.by = "sample", label = FALSE, pt.size = 0.1)+
+             ggtitle("General map_LO")
+
+# Save the UMAP plot as a TIFF file in the current working directory
+ggsave(filename = "LO_UMAP_general_v2.tiff", plot = umap_plot, device = "tiff", width = 8, height = 6, units = "in", dpi = 300)
+
+```
+
+
+## 3.5.3 Look at all the samples together (no separate replicates)
+
+
+```{r UMAP - all samples & merged replicates 2}
+
+#now plot umap, group by the identifier
+DimPlot(LO_integrated, reduction = "umap", group.by = "sample_type", label = FALSE, pt.size = 0.1) +
+             ggtitle("LO sample type")
+
+# Create the UMAP plot
+umap_plot <- DimPlot(LO_integrated, reduction = "umap", group.by = "sample_type", label = FALSE, pt.size = 0.1)+
+             ggtitle("LO sSample type")
+
+# Save the UMAP plot as a TIFF file in the current working directory
+ggsave(filename = "LO_UMAP_by_sample_v2.tiff", plot = umap_plot, device = "tiff", width = 8, height = 6, units = "in", dpi = 300)
+
+```
+
+
+## 3.5.4 Look at feed vs injection
+
+
+```{r UMAP _ feed vs injection 2}
+
+#now plot umap, group by the identifier
+DimPlot(LO_integrated, reduction = "umap", group.by = "inf_group", label = FALSE, pt.size = 0.1) +
+             ggtitle("LO feed vs injection") 
+
+# Create the UMAP plot
+umap_plot <- DimPlot(LO_integrated, reduction = "umap", group.by = "inf_group", label = FALSE, pt.size = 0.1)+
+             ggtitle("LO feed vs injection")
+
+# Save the UMAP plot as a TIFF file in the current working directory
+ggsave(filename = "LO_UMAP_by_infection_group_v2.tiff", plot = umap_plot, device = "tiff", width = 8, height = 6, units = "in", dpi = 300)
+
+```
+
+
+## 3.5.5 Look at control vs infected
+
+
+```{r UMAP _ control vs infected 2}
+
+#now plot umap, group by the identifier
+DimPlot(LO_integrated, reduction = "umap", group.by = "inf_status", label = FALSE, pt.size = 0.1) +
+             ggtitle("LO control vs infected") 
+
+# Create the UMAP plot
+umap_plot <- DimPlot(LO_integrated, reduction = "umap", group.by = "inf_status", label = FALSE, pt.size = 0.1)+
+             ggtitle("LO control vs infected")
+
+# Save the UMAP plot as a TIFF file in the current working directory
+ggsave(filename = "LO_UMAP_by_infection_status_v2.tiff", plot = umap_plot, device = "tiff", width = 8, height = 6, units = "in", dpi = 300)
+
+```
+
+
+## 3.6 Save the data
+
+
+```{r Save the new file}
+
+#save the new object with the extra columns
+saveRDS(LO_integrated, file = "LO_integrated_with_groups.rds")
+
+```
+
+
+################################################################################
+
+```{r Session Info}
+
+#Packages and versions for reference
+sessioninfo::session_info()
+
+```
+
+################################################################################
+
+CONTINUE IN PART 4
+
+

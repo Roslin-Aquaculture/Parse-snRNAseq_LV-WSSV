@@ -1,0 +1,230 @@
+---
+title: "L vannamei WSSV challenge snRNAseq for transcriptomic analysis of - Parse Biosciences WT_mega v2 kit - PART 5 - Cluster annotation"
+author: "Alexandra Florea"
+date: "2024-06-16"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+PART 5 ---- Annotate the UMAP clusters after investigation and look at cluster stats (UMI, features, DGE..etc) - LO
+
+
+    # 1. PRE-RUN PREP 
+    
+## 1.1 Prep the environment
+
+```{r environment setup}
+
+# Set working directory
+knitr::opts_knit$set(root.dir = 'your_file_path/Seurat_out/')
+
+# Prevent scientific notation output
+options(scipen=999)
+
+#set seed for reproducibility
+set.seed(42) #note that UMAPs use seed of 42
+
+```
+
+
+## 1.2 Load all the necessary packages
+
+
+```{r load packages}
+
+# Load up libraries
+library(Seurat) # to run single cell analyses
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+
+```
+
+
+## 1.3  Load the data (already filtered, integrated and with extra metadata from PART 3)
+
+
+```{r load Seurat object}
+
+LO_integrated_with_groups <- readRDS("your_file_path/Seurat_out/LO_integrated_with_groups.rds")
+
+```
+
+
+## 1.4 Set Default Assay
+
+
+For performing differential expression after integration, we switch back to the SCT data
+# https://github.com/satijalab/seurat/issues/1534
+# https://satijalab.org/seurat/articles/integration_introduction.html
+
+```{r set default assay}
+
+# SCT -> for performing differential expression after integration
+DefaultAssay(LO_integrated_with_groups) <- "SCT"
+
+```
+
+
+## 1.5 Load the Differentially Expressed Markers
+
+Here we load the full table of differential expressed genes that we made in Step3 of Seurat analysis.
+
+```{r load markers}
+
+LO_DEG <- fread(file = "your_file_path/Seurat_out/DE-LO-full.txt", sep="\t", stringsAsFactors = FALSE)
+
+```
+
+Note that you'll get a warning because no column name for first column. R fixes it by giving the first column a name="V1". No need to do anything else.
+
+
+## 1.6 Quick check of UMI and features / cluster
+
+
+This step is because cluster 7 has lots of ribosomal genes expressed. But it also has interesting genes. I want to check if the uMI & features count is low too. That would be an indication that the cluster is just junk cells and can be discarded. That cluser also has a wide spread on the UMAP (not nicely clustered), but that is not necessarily a good indication as the UMAP visualisation of clusters is not set in stone or a good criteria for cluster quality. 
+
+```{r Quick look at UMI & features no per cluster to verify cluster 7}
+
+# Fetch the number of UMIs and features for each cell along with their cluster assignments
+cluster_data <- FetchData(LO_integrated_with_groups, vars = c("nCount_RNA", "nFeature_RNA", "seurat_clusters"))
+
+# Convert to data frame for easier manipulation
+cluster_data <- as.data.frame(cluster_data)
+
+# Summarize the number of UMIs and features for each cluster
+cluster_summary <- cluster_data %>%
+  group_by(seurat_clusters) %>%
+  summarise(
+    total_UMIs = sum(nCount_RNA),
+    mean_UMIs = mean(nCount_RNA),
+    median_UMIs = median(nCount_RNA),
+    total_features = sum(nFeature_RNA),
+    mean_features = mean(nFeature_RNA),
+    median_features = median(nFeature_RNA),
+    cell_count = n()
+  )
+
+# Print the summary
+print(cluster_summary)
+
+```
+
+Ok, so cluster 7 looks alright. I will keep it for now.
+
+
+################################################################################
+
+
+   #2 Change cluster resolution (Optional)
+   
+
+We can do this to explore clustering in more detail if you suspect some clusters need to be split or combined.
+
+
+## 2.1 Re-run UMAP with default parameters
+
+
+For me, check if I get cluster 7 to split in 2 if I increase the resolution by a bit:
+
+NOTE: Remember we had a look at the spread-out UMAPS? We need to re-adjust the parameters to original before we re-do the UMAP to be consistent (We saved the .rds with the spread-out parameter on).The default "min.dist" parameter is 0.3 (we had it at 0.9).
+
+```{r Re-clustering with higher resolution}
+
+#change assay type for this step
+DefaultAssay(LO_integrated_with_groups) <- "integrated"
+
+# First thing to do is to calculate the neighbourhood overlap
+# use the same number of dimensions as used for UMAP
+LO_integrated_with_groups <- FindNeighbors(LO_integrated_with_groups, dims = 1:20)
+
+# Now we use that neighbourhood information to figure out which cells belong together in a cluster. 
+LO_integrated_with_groups <- FindClusters(LO_integrated_with_groups, resolution = 0.3) # Original resolution was 0.2
+
+# Adjust UMAP parameters back to the original values
+LO_integrated_with_groups <- RunUMAP(LO_integrated_with_groups, dims = 1:20, verbose = FALSE)
+
+# Plot the UMAP and label the clusters
+
+umap_clusters_labeled <- DimPlot(LO_integrated_with_groups, reduction = "umap", label = TRUE, pt.size = 0.15) + NoLegend()
+
+# Save plots to PNG file
+png("LO_UMAP_clusters_higher_rez.png", res=600, width=4800, height=3200)
+print(umap_clusters_labeled)
+dev.off()
+
+print(umap_clusters_labeled)
+
+```
+
+So a resolution of 0.3 (from 0.2) actually splits just my cluster 7 into 2. Also, the new cluster 5 and 3 are split differently, but those were both nervous system cells so I am happy with this too. 
+
+
+## 2.2. Find Markers_DGE - for the new clusters
+
+
+We are running this just like before. I just want to get the new table with the markers for that cluster 7 that got split into 2.
+
+  
+Change the default assay back to SCT (remember we changed it to "integrated" for the resolution change)
+
+```{r set default assay back to SCT}
+
+DefaultAssay(LO_integrated_with_groups) <- "SCT"
+
+```
+
+
+```{r Differential Expression}
+
+#| cache = TRUE #pre-save the results for the future to not re-run the chunk on knitr
+
+# First prep for SCT based DE marker detection:
+LO_integrated_with_groups <- PrepSCTFindMarkers(LO_integrated_with_groups, assay = "SCT")
+
+# Find markers for every cluster compared to all remaining cells, report only the positive ones, run a logistic regression model with sample as a latent variable, use "SCT" assay and the "data" slot
+
+LO.markers <- FindAllMarkers(LO_integrated_with_groups, assay = "SCT", slot = "data", only.pos = TRUE, min.pct = 0.25, return.thresh = 0.01, pseudocount.use = 0.001, logfc.threshold = 0.25, test.use = "LR", latent.vars = "sample")
+                             
+# save to file (this will have all the DE gene markers)
+write.table(LO.markers, file="DE-LO-full_higher_rez.txt", sep="\t")
+
+```
+
+
+```{r Top 20 marker selection}
+
+#I want to make a selection of just the top 10 markers max that are significant (P value <0.05)
+top20markers <- LO.markers %>% dplyr::group_by(cluster) %>% filter(p_val_adj < 0.05) %>% top_n(n = 20, wt = avg_log2FC)
+
+# save to file (this will have all the DE gene markers)
+write.table(top20markers, file="top20markers_LO_higher_rez.txt", sep="\t")
+
+```
+
+Now look transfer the new markers in an excel and look at the new cluster that was formed
+
+```{r Save the RDS}
+
+# Save the changes into the LO rds file
+saveRDS(LO_integrated_with_groups, file = "LO_integrated_with_groups.rds")
+
+```
+
+################################################################################
+
+```{r Session Info}
+
+#Packages and versions for reference
+sessioninfo::session_info()
+
+```
+
+################################################################################
+
+CONTINUE IN PART 6
